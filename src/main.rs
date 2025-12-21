@@ -22,7 +22,7 @@ use ratatui_image::Resize;
 use std::env;
 use std::error::Error;
 use std::future::Future;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
@@ -42,6 +42,7 @@ enum InputAction {
     Search,
     AddFile,
     AddDir,
+    Rename,
     ConfirmDelete,
 }
 
@@ -61,7 +62,8 @@ impl InputState {
             InputAction::Search => "Search",
             InputAction::AddFile => "Add File",
             InputAction::AddDir => "Add Dir",
-            InputAction::ConfirmDelete => "Remove",
+            InputAction::Rename => "Rename",
+            InputAction::ConfirmDelete => "Delete",
         }
     }
 }
@@ -144,6 +146,7 @@ struct App {
     show_metadata: bool,
     show_permissions: bool,
     show_dates: bool,
+    show_owner: bool,
     preview_request_id: u64,
     preview_pending: bool,
     listing_id: u64,
@@ -168,6 +171,7 @@ impl App {
             show_metadata: config.metadata_bar.enabled,
             show_permissions: config.metadata_bar.show_permissions,
             show_dates: config.metadata_bar.show_dates,
+            show_owner: config.metadata_bar.show_owner,
             config,
             picker,
             current_dir,
@@ -208,6 +212,7 @@ impl App {
             show_metadata: self.show_metadata,
             show_permissions: self.show_permissions,
             show_dates: self.show_dates,
+            show_owner: self.show_owner,
             metadata: self.preview.as_ref().and_then(|preview| preview.metadata.as_ref()),
             image_state,
             input,
@@ -472,11 +477,24 @@ impl InputHandler {
             PendingPrefix::Settings => match key.code {
                 KeyCode::Char('r') => {
                     app.show_permissions = !app.show_permissions;
+                    app.show_metadata = true;
                     effect.redraw = true;
                     return effect;
                 }
                 KeyCode::Char('d') => {
                     app.show_dates = !app.show_dates;
+                    app.show_metadata = true;
+                    effect.redraw = true;
+                    return effect;
+                }
+                KeyCode::Char('o') => {
+                    app.show_owner = !app.show_owner;
+                    app.show_metadata = true;
+                    effect.redraw = true;
+                    return effect;
+                }
+                KeyCode::Char('m') => {
+                    app.show_metadata = !app.show_metadata;
                     effect.redraw = true;
                     return effect;
                 }
@@ -533,6 +551,12 @@ impl InputHandler {
                 app.pending_prefix = Some(PendingPrefix::Add);
             }
             KeyCode::Char('r') => {
+                if app.selected_entry().is_some() {
+                    Self::start_input(app, InputAction::Rename);
+                    effect.redraw = true;
+                }
+            }
+            KeyCode::Char('d') => {
                 if app.selected_entry().is_some() {
                     Self::start_input(app, InputAction::ConfirmDelete);
                     effect.redraw = true;
@@ -652,6 +676,37 @@ impl InputHandler {
                 }
                 _ => {}
             },
+            InputAction::Rename => match key.code {
+                KeyCode::Esc => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    let new_name = input.buffer.trim();
+                    if !new_name.is_empty() {
+                        if let Some(entry) = app.selected_entry() {
+                            let src = entry.path.clone();
+                            let dest = src.with_file_name(new_name);
+                            if src != dest {
+                                spawn_refresh(tx, Some(dest.clone()), async move {
+                                    core::rename_path(&src, &dest).await
+                                });
+                            }
+                        }
+                    }
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
             InputAction::ConfirmDelete => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if let Some(entry) = app.selected_entry() {
@@ -733,10 +788,13 @@ impl InputHandler {
     }
 
     fn start_input(app: &mut App, action: InputAction) {
-        let buffer = if matches!(action, InputAction::Search) {
-            app.filter.clone()
-        } else {
-            String::new()
+        let buffer = match action {
+            InputAction::Search => app.filter.clone(),
+            InputAction::Rename => app
+                .selected_entry()
+                .map(|entry| entry.name.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
         };
         app.pending_prefix = None;
         app.mode = Mode::Input(InputState::new(action, buffer));
@@ -910,10 +968,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
 
-    let (tx, mut rx) = tokio_mpsc::unbounded_channel();
-    let _input_handle = spawn_input(tx.clone());
-    let image_worker_tx = spawn_image_worker(tx.clone());
-
     let mut picker = Picker::new((8, 12));
     #[cfg(unix)]
     {
@@ -921,7 +975,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             picker = found;
         }
     }
-    picker.guess_protocol();
+    if io::stdin().is_terminal() {
+        picker.guess_protocol();
+    }
+
+    let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+    let _input_handle = spawn_input(tx.clone());
+    let image_worker_tx = spawn_image_worker(tx.clone());
 
     let mut app = App::new(config, picker, image_worker_tx, &tx).await?;
     terminal.draw(|frame| ui::render(frame, app.ui_state()))?;

@@ -96,6 +96,7 @@ pub struct UiState<'a> {
     pub show_metadata: bool,
     pub show_permissions: bool,
     pub show_dates: bool,
+    pub show_owner: bool,
     pub metadata: Option<&'a FileMetadata>,
     pub image_state: Option<&'a mut ThreadProtocol>,
     pub input: Option<InputPrompt>,
@@ -212,6 +213,7 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
             state.metadata,
             state.show_permissions,
             state.show_dates,
+            state.show_owner,
         ))
         .block(
             Block::default()
@@ -317,6 +319,7 @@ fn metadata_text(
     metadata: Option<&FileMetadata>,
     show_permissions: bool,
     show_dates: bool,
+    show_owner: bool,
 ) -> String {
     let Some(metadata) = metadata else {
         return String::new();
@@ -326,7 +329,9 @@ fn metadata_text(
     if show_permissions {
         parts.push(format!("{} {}", icons.permissions, metadata.permissions));
     }
-    parts.push(format!("{} {}", icons.owner, metadata.owner));
+    if show_owner {
+        parts.push(format!("{} {}", icons.owner, metadata.owner));
+    }
     if show_dates {
         if let Some(created) = &metadata.created {
             parts.push(format!("{} {}", icons.created, created));

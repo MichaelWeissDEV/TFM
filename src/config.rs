@@ -105,6 +105,7 @@ pub struct MetadataBar {
     pub enabled: bool,
     pub show_permissions: bool,
     pub show_dates: bool,
+    pub show_owner: bool,
     pub icons: MetadataIcons,
 }
 
@@ -114,6 +115,7 @@ impl Default for MetadataBar {
             enabled: false,
             show_permissions: true,
             show_dates: true,
+            show_owner: true,
             icons: MetadataIcons::default(),
         }
     }
