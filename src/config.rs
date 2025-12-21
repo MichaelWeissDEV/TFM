@@ -51,6 +51,7 @@ pub struct Theme {
     pub selection_bg: String,
     pub selection_fg: String,
     pub accent: String,
+    pub folder: String,
     pub warning: String,
     pub error: String,
 }
@@ -63,6 +64,7 @@ impl Default for Theme {
             selection_bg: "blue".to_string(),
             selection_fg: "black".to_string(),
             accent: "cyan".to_string(),
+            folder: "lightblue".to_string(),
             warning: "yellow".to_string(),
             error: "red".to_string(),
         }

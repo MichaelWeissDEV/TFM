@@ -23,7 +23,8 @@ use std::env;
 use std::error::Error;
 use std::future::Future;
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -227,6 +228,7 @@ struct App {
     image_worker_tx: Sender<(u64, Box<dyn StatefulProtocol>, Resize, Rect)>,
     clipboard: Option<ClipboardEntry>,
     markers: MarkerStore,
+    exit_to_shell: Option<PathBuf>,
 }
 
 impl App {
@@ -267,6 +269,7 @@ impl App {
             image_worker_tx,
             clipboard: None,
             markers,
+            exit_to_shell: None,
         };
         app.refresh_dirs(tx);
         Ok(app)
@@ -700,6 +703,10 @@ impl InputHandler {
             }
             KeyCode::Char('p') => {
                 Self::paste_selection(app, tx);
+            }
+            KeyCode::Char('t') => {
+                app.exit_to_shell = Some(app.current_dir.clone());
+                effect.exit = true;
             }
             _ => {}
         }
@@ -1295,10 +1302,24 @@ fn spawn_copy_path(path: PathBuf) {
     });
 }
 
+fn launch_shell(path: &Path) -> io::Result<()> {
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = Command::new(shell).current_dir(path).exec();
+        Err(err)
+    }
+    #[cfg(not(unix))]
+    {
+        Command::new(shell).current_dir(path).status().map(|_| ())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
-    let _guard = TerminalGuard::enter()?;
+    let guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
 
@@ -1407,6 +1428,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         if redraw {
             terminal.draw(|frame| ui::render(frame, app.ui_state()))?;
+        }
+    }
+
+    let exit_to_shell = app.exit_to_shell.take();
+    drop(terminal);
+    drop(guard);
+    if let Some(path) = exit_to_shell {
+        if let Err(err) = launch_shell(&path) {
+            eprintln!("Failed to open shell: {err}");
         }
     }
 

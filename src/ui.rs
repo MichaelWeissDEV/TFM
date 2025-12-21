@@ -15,6 +15,7 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Style as SyntectStyle, Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub struct ThreadImage {
     resize: Resize,
@@ -121,6 +122,7 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
         .fg(parse_color(&theme.foreground))
         .bg(parse_color(&theme.background));
     let accent_style = Style::default().fg(parse_color(&theme.accent));
+    let folder_style = Style::default().fg(parse_color(&theme.folder));
     let selection_style = Style::default()
         .fg(parse_color(&theme.selection_fg))
         .bg(parse_color(&theme.selection_bg))
@@ -148,7 +150,16 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
         ])
         .split(layout[0]);
 
-    let parent_items = list_items(state.config, state.parent, None, false, false);
+    let parent_inner_width = areas[0].width.saturating_sub(2);
+    let parent_items = list_items(
+        state.config,
+        state.parent,
+        None,
+        false,
+        false,
+        parent_inner_width,
+        folder_style,
+    );
     let parent_list = List::new(parent_items).block(
         Block::default()
             .borders(Borders::ALL)
@@ -159,12 +170,18 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
     );
     frame.render_widget(parent_list, areas[0]);
 
+    let current_inner_width = areas[1].width.saturating_sub(2);
+    let highlight_symbol = "> ";
+    let highlight_width = UnicodeWidthStr::width(highlight_symbol) as u16;
+    let current_content_width = current_inner_width.saturating_sub(highlight_width);
     let current_items = list_items(
         state.config,
         state.current,
         Some(state.current_indices),
         state.show_list_permissions,
         state.show_list_owner,
+        current_content_width,
+        folder_style,
     );
     let current_list = List::new(current_items)
         .block(
@@ -176,7 +193,7 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
                 .title_style(accent_style),
         )
         .highlight_style(selection_style)
-        .highlight_symbol("> ");
+        .highlight_symbol(highlight_symbol);
 
     let mut list_state = ListState::default();
     if !state.current_indices.is_empty() {
@@ -321,29 +338,94 @@ fn list_items(
     indices: Option<&[usize]>,
     show_permissions: bool,
     show_owner: bool,
+    content_width: u16,
+    folder_style: Style,
 ) -> Vec<ListItem<'static>> {
-    let iter: Box<dyn Iterator<Item = &FileEntry>> = match indices {
-        Some(indices) => Box::new(indices.iter().filter_map(|&index| entries.get(index))),
-        None => Box::new(entries.iter()),
+    let entries_view: Vec<&FileEntry> = match indices {
+        Some(indices) => indices.iter().filter_map(|&index| entries.get(index)).collect(),
+        None => entries.iter().collect(),
     };
-    iter.map(|entry| ListItem::new(entry_label(config, entry, show_permissions, show_owner)))
+    let perm_width = if show_permissions {
+        entries_view
+            .iter()
+            .map(|entry| UnicodeWidthStr::width(entry.permissions.as_str()))
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let owner_width = if show_owner {
+        entries_view
+            .iter()
+            .map(|entry| UnicodeWidthStr::width(entry.owner.as_str()))
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    entries_view
+        .into_iter()
+        .map(|entry| {
+            let label = entry_label(
+                config,
+                entry,
+                show_permissions,
+                show_owner,
+                content_width,
+                perm_width,
+                owner_width,
+            );
+            let item = ListItem::new(label);
+            if entry.is_dir {
+                item.style(folder_style)
+            } else {
+                item
+            }
+        })
         .collect()
 }
 
-fn entry_label(config: &Config, entry: &FileEntry, show_permissions: bool, show_owner: bool) -> String {
+fn entry_label(
+    config: &Config,
+    entry: &FileEntry,
+    show_permissions: bool,
+    show_owner: bool,
+    content_width: u16,
+    perm_width: usize,
+    owner_width: usize,
+) -> String {
     let icon = if entry.is_dir {
         &config.icons.folder
     } else {
         &config.icons.file
     };
-    let mut label = format!("{icon} {}", entry.name);
+    let prefix = format!("{icon} ");
+    let prefix_width = UnicodeWidthStr::width(prefix.as_str());
+    let mut right_text = String::new();
     if show_permissions {
-        label.push_str(&format!("  {}", entry.permissions));
+        right_text.push_str(&pad_to_width(&entry.permissions, perm_width));
     }
     if show_owner {
-        label.push_str(&format!("  {}", entry.owner));
+        if !right_text.is_empty() {
+            right_text.push_str("  ");
+        }
+        right_text.push_str(&pad_to_width(&entry.owner, owner_width));
     }
-    label
+    let right_width = UnicodeWidthStr::width(right_text.as_str());
+    let content_width = content_width as usize;
+    if content_width == 0 {
+        return format!("{prefix}{}", entry.name);
+    }
+    let gap = if right_text.is_empty() { 0 } else { 2 };
+    let available_name_width = content_width.saturating_sub(prefix_width + right_width + gap);
+    let name = truncate_with_ellipsis(&entry.name, available_name_width);
+    if right_text.is_empty() {
+        return format!("{prefix}{name}");
+    }
+    let name_width = UnicodeWidthStr::width(name.as_str());
+    let padding_width = content_width.saturating_sub(prefix_width + name_width + right_width);
+    let padding = " ".repeat(padding_width);
+    format!("{prefix}{name}{padding}{right_text}")
 }
 
 fn preview_title(preview: &Preview) -> (String, bool) {
@@ -471,6 +553,42 @@ fn syntect_style(style: SyntectStyle) -> Style {
         ratatui_style = ratatui_style.add_modifier(Modifier::ITALIC);
     }
     ratatui_style
+}
+
+fn pad_to_width(value: &str, width: usize) -> String {
+    let value_width = UnicodeWidthStr::width(value);
+    if value_width >= width {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + (width - value_width));
+    out.push_str(value);
+    out.push_str(&" ".repeat(width - value_width));
+    out
+}
+
+fn truncate_with_ellipsis(value: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(value) <= max_width {
+        return value.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width <= 3 {
+        return value.chars().take(max_width).collect();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    let target = max_width - 3;
+    for ch in value.chars() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + width > target {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out.push_str("...");
+    out
 }
 
 fn syntax_set() -> &'static SyntaxSet {
