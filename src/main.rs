@@ -1,13 +1,16 @@
 mod config;
 mod core;
+mod markers;
 mod preview;
 mod security;
 mod ui;
 
 use crate::config::Config;
 use crate::core::FileEntry;
+use crate::markers::MarkerStore;
 use crate::preview::Preview;
-use crossterm::event::{Event, KeyCode, KeyEventKind};
+use arboard::Clipboard;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, event, execute};
 use ratatui::backend::CrosstermBackend;
@@ -18,6 +21,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::Resize;
 use std::env;
 use std::error::Error;
+use std::future::Future;
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
@@ -31,6 +35,67 @@ const DIR_BATCH_SIZE: usize = 512;
 enum DirTarget {
     Parent,
     Current,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputAction {
+    Search,
+    AddFile,
+    AddDir,
+    ConfirmDelete,
+}
+
+#[derive(Debug)]
+struct InputState {
+    action: InputAction,
+    buffer: String,
+}
+
+impl InputState {
+    fn new(action: InputAction, buffer: String) -> Self {
+        Self { action, buffer }
+    }
+
+    fn title(&self) -> &'static str {
+        match self.action {
+            InputAction::Search => "Search",
+            InputAction::AddFile => "Add File",
+            InputAction::AddDir => "Add Dir",
+            InputAction::ConfirmDelete => "Remove",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MarkerAction {
+    Set,
+    Jump,
+}
+
+#[derive(Debug)]
+enum Mode {
+    Normal,
+    Input(InputState),
+    MarkerWaiting(MarkerAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingPrefix {
+    Add,
+    Settings,
+    Copy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipboardOp {
+    Cut,
+    Copy,
+}
+
+#[derive(Clone, Debug)]
+struct ClipboardEntry {
+    op: ClipboardOp,
+    path: PathBuf,
 }
 
 enum AppEvent {
@@ -49,6 +114,18 @@ enum AppEvent {
         version: u64,
         protocol: Box<dyn StatefulProtocol>,
     },
+    Action(ActionResult),
+}
+
+enum ActionResult {
+    Refresh { select: Option<PathBuf> },
+}
+
+#[derive(Default)]
+struct InputEffect {
+    exit: bool,
+    redraw: bool,
+    request_preview: bool,
 }
 
 struct App {
@@ -57,9 +134,16 @@ struct App {
     current_dir: PathBuf,
     parent_entries: Vec<FileEntry>,
     current_entries: Vec<FileEntry>,
+    filtered_indices: Vec<usize>,
     selected: usize,
+    filter: String,
+    mode: Mode,
+    pending_prefix: Option<PendingPrefix>,
     preview: Option<Preview>,
+    highlighted_preview: Option<ui::HighlightedText>,
     show_metadata: bool,
+    show_permissions: bool,
+    show_dates: bool,
     preview_request_id: u64,
     preview_pending: bool,
     listing_id: u64,
@@ -67,6 +151,8 @@ struct App {
     image_state: Option<ui::ThreadProtocol>,
     image_version: u64,
     image_worker_tx: Sender<(u64, Box<dyn StatefulProtocol>, Resize, Rect)>,
+    clipboard: Option<ClipboardEntry>,
+    markers: MarkerStore,
 }
 
 impl App {
@@ -77,15 +163,23 @@ impl App {
         tx: &tokio_mpsc::UnboundedSender<AppEvent>,
     ) -> Result<Self, core::CoreError> {
         let current_dir = env::current_dir()?;
+        let markers = MarkerStore::load().await;
         let mut app = Self {
             show_metadata: config.metadata_bar.enabled,
+            show_permissions: config.metadata_bar.show_permissions,
+            show_dates: config.metadata_bar.show_dates,
             config,
             picker,
             current_dir,
             parent_entries: Vec::new(),
             current_entries: Vec::new(),
+            filtered_indices: Vec::new(),
             selected: 0,
+            filter: String::new(),
+            mode: Mode::Normal,
+            pending_prefix: None,
             preview: None,
+            highlighted_preview: None,
             preview_request_id: 0,
             preview_pending: false,
             listing_id: 0,
@@ -93,8 +187,10 @@ impl App {
             image_state: None,
             image_version: 0,
             image_worker_tx,
+            clipboard: None,
+            markers,
         };
-        app.refresh_dirs(tx).await?;
+        app.refresh_dirs(tx);
         Ok(app)
     }
 
@@ -103,16 +199,48 @@ impl App {
             config: &self.config,
             parent: &self.parent_entries,
             current: &self.current_entries,
+            current_indices: &self.filtered_indices,
             selected: self.selected,
             preview: self.preview.as_ref(),
+            highlighted_preview: self.highlighted_preview.as_ref(),
             show_metadata: self.show_metadata,
+            show_permissions: self.show_permissions,
+            show_dates: self.show_dates,
             metadata: self.preview.as_ref().and_then(|preview| preview.metadata.as_ref()),
             image_state: self.image_state.as_mut(),
+            input: self.input_prompt(),
+        }
+    }
+
+    fn input_prompt(&self) -> Option<ui::InputPrompt> {
+        match &self.mode {
+            Mode::Input(input) => {
+                let value = match input.action {
+                    InputAction::ConfirmDelete => "y/n".to_string(),
+                    _ => format!("{}|", input.buffer),
+                };
+                Some(ui::InputPrompt {
+                    title: input.title().to_string(),
+                    value,
+                })
+            }
+            Mode::MarkerWaiting(action) => {
+                let title = match action {
+                    MarkerAction::Set => "Set Marker",
+                    MarkerAction::Jump => "Jump Marker",
+                };
+                Some(ui::InputPrompt {
+                    title: title.to_string(),
+                    value: "|".to_string(),
+                })
+            }
+            Mode::Normal => None,
         }
     }
 
     fn clear_preview(&mut self) {
         self.preview = None;
+        self.highlighted_preview = None;
         self.image_state = None;
         self.preview_pending = false;
     }
@@ -127,7 +255,7 @@ impl App {
     }
 
     fn select_down(&mut self) -> bool {
-        if self.selected + 1 < self.current_entries.len() {
+        if self.selected + 1 < self.filtered_indices.len() {
             self.selected += 1;
             self.clear_preview();
             return true;
@@ -135,42 +263,33 @@ impl App {
         false
     }
 
-    async fn enter_selected(
-        &mut self,
-        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
-    ) -> Result<bool, core::CoreError> {
+    fn activate_selected(&mut self, tx: &tokio_mpsc::UnboundedSender<AppEvent>) -> bool {
         let Some(entry) = self.selected_entry() else {
-            return Ok(false);
+            return false;
         };
-        if !entry.is_dir {
-            return Ok(false);
+        if entry.is_dir {
+            self.current_dir = entry.path.clone();
+            self.selected = 0;
+            self.pending_selection = None;
+            self.clear_preview();
+            self.refresh_dirs(tx);
+            return true;
         }
-        self.current_dir = entry.path.clone();
-        self.selected = 0;
-        self.pending_selection = None;
-        self.clear_preview();
-        self.refresh_dirs(tx).await?;
-        Ok(true)
+        spawn_open(entry.path.clone());
+        false
     }
 
-    async fn navigate_parent(
-        &mut self,
-        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
-    ) -> Result<bool, core::CoreError> {
+    fn navigate_parent(&mut self, tx: &tokio_mpsc::UnboundedSender<AppEvent>) -> bool {
         let Some(parent) = self.current_dir.parent() else {
-            return Ok(false);
+            return false;
         };
         let previous = self.current_dir.clone();
         self.current_dir = parent.to_path_buf();
         self.selected = 0;
         self.pending_selection = Some(previous);
         self.clear_preview();
-        self.refresh_dirs(tx).await?;
-        Ok(true)
-    }
-
-    fn toggle_metadata(&mut self) {
-        self.show_metadata = !self.show_metadata;
+        self.refresh_dirs(tx);
+        true
     }
 
     fn request_preview(&mut self, tx: &tokio_mpsc::UnboundedSender<AppEvent>) {
@@ -202,6 +321,7 @@ impl App {
         match result {
             Ok(mut preview) => {
                 self.image_state = None;
+                self.highlighted_preview = ui::highlight_preview(&preview);
                 if let Some(image) = preview.image.take() {
                     self.image_version = self.image_version.wrapping_add(1);
                     let version = self.image_version;
@@ -216,6 +336,7 @@ impl App {
             }
             Err(_) => {
                 self.preview = None;
+                self.highlighted_preview = None;
                 self.image_state = None;
             }
         }
@@ -223,30 +344,423 @@ impl App {
     }
 
     fn selected_entry(&self) -> Option<&FileEntry> {
-        self.current_entries.get(self.selected)
+        let index = *self.filtered_indices.get(self.selected)?;
+        self.current_entries.get(index)
     }
 
-    async fn refresh_dirs(
-        &mut self,
-        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
-    ) -> Result<(), core::CoreError> {
+    fn refresh_dirs(&mut self, tx: &tokio_mpsc::UnboundedSender<AppEvent>) {
         self.listing_id = self.listing_id.wrapping_add(1);
         let listing_id = self.listing_id;
         self.current_entries.clear();
         self.parent_entries.clear();
+        self.filtered_indices.clear();
         self.clear_preview();
         spawn_dir_listing(tx.clone(), DirTarget::Current, listing_id, self.current_dir.clone());
         if let Some(parent) = self.current_dir.parent() {
             spawn_dir_listing(tx.clone(), DirTarget::Parent, listing_id, parent.to_path_buf());
         }
-        Ok(())
     }
 
-    fn clamp_selection(&mut self) {
-        if self.current_entries.is_empty() {
+    fn apply_filter(&mut self, preferred: Option<PathBuf>) -> bool {
+        let had_entries = !self.filtered_indices.is_empty();
+        let previous_selected = self.selected;
+        let query = self.filter.to_ascii_lowercase();
+        self.filtered_indices = if query.is_empty() {
+            (0..self.current_entries.len()).collect()
+        } else {
+            self.current_entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    entry
+                        .name
+                        .to_ascii_lowercase()
+                        .contains(query.as_str())
+                })
+                .map(|(index, _)| index)
+                .collect()
+        };
+        let mut new_selected = 0usize;
+        if let Some(preferred) = preferred {
+            if let Some(pos) = self
+                .filtered_indices
+                .iter()
+                .position(|&index| self.current_entries[index].path == preferred)
+            {
+                new_selected = pos;
+            }
+        }
+        let changed = if self.filtered_indices.is_empty() {
+            had_entries
+        } else {
+            previous_selected != new_selected
+        };
+        self.selected = new_selected;
+        if self.filtered_indices.is_empty() {
             self.selected = 0;
-        } else if self.selected >= self.current_entries.len() {
-            self.selected = self.current_entries.len() - 1;
+        }
+        changed
+    }
+
+    fn update_filter(&mut self, value: String) -> bool {
+        let selected_path = self.selected_entry().map(|entry| entry.path.clone());
+        self.filter = value;
+        self.apply_filter(selected_path)
+    }
+
+    fn clear_filter(&mut self) -> bool {
+        let selected_path = self.selected_entry().map(|entry| entry.path.clone());
+        self.filter.clear();
+        self.apply_filter(selected_path)
+    }
+}
+
+struct InputHandler;
+
+impl InputHandler {
+    fn handle_key(
+        app: &mut App,
+        key: KeyEvent,
+        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    ) -> InputEffect {
+        match &mut app.mode {
+            Mode::Input(_) => Self::handle_input(app, key, tx),
+            Mode::MarkerWaiting(_) => Self::handle_marker(app, key, tx),
+            Mode::Normal => Self::handle_normal(app, key, tx),
+        }
+    }
+
+    fn handle_normal(
+        app: &mut App,
+        key: KeyEvent,
+        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    ) -> InputEffect {
+        if let Some(prefix) = app.pending_prefix.take() {
+            return Self::handle_prefix(app, prefix, key, tx);
+        }
+        Self::handle_normal_key(app, key, tx)
+    }
+
+    fn handle_prefix(
+        app: &mut App,
+        prefix: PendingPrefix,
+        key: KeyEvent,
+        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    ) -> InputEffect {
+        let mut effect = InputEffect::default();
+        if matches!(key.code, KeyCode::Esc) {
+            return effect;
+        }
+        match prefix {
+            PendingPrefix::Add => {
+                if matches!(key.code, KeyCode::Char('d')) {
+                    Self::start_input(app, InputAction::AddDir);
+                    effect.redraw = true;
+                    return effect;
+                }
+                Self::start_input(app, InputAction::AddFile);
+                effect.redraw = true;
+                let input_effect = Self::handle_input(app, key, tx);
+                return InputEffect {
+                    exit: input_effect.exit,
+                    redraw: effect.redraw || input_effect.redraw,
+                    request_preview: input_effect.request_preview,
+                };
+            }
+            PendingPrefix::Settings => match key.code {
+                KeyCode::Char('r') => {
+                    app.show_permissions = !app.show_permissions;
+                    effect.redraw = true;
+                    return effect;
+                }
+                KeyCode::Char('d') => {
+                    app.show_dates = !app.show_dates;
+                    effect.redraw = true;
+                    return effect;
+                }
+                KeyCode::Esc => return effect,
+                _ => return Self::handle_normal_key(app, key, tx),
+            },
+            PendingPrefix::Copy => {
+                if matches!(key.code, KeyCode::Char('p')) {
+                    if let Some(entry) = app.selected_entry() {
+                        spawn_copy_path(entry.path.clone());
+                    }
+                    return effect;
+                }
+                return Self::handle_normal_key(app, key, tx);
+            }
+        }
+    }
+
+    fn handle_normal_key(
+        app: &mut App,
+        key: KeyEvent,
+        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    ) -> InputEffect {
+        let mut effect = InputEffect::default();
+        match key.code {
+            KeyCode::Char('q') => effect.exit = true,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if app.select_up() {
+                    effect.redraw = true;
+                    effect.request_preview = true;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if app.select_down() {
+                    effect.redraw = true;
+                    effect.request_preview = true;
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if app.navigate_parent(tx) {
+                    effect.redraw = true;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+                if app.activate_selected(tx) {
+                    effect.redraw = true;
+                }
+            }
+            KeyCode::Char('/') => {
+                Self::start_input(app, InputAction::Search);
+                effect.redraw = true;
+            }
+            KeyCode::Char('a') => {
+                app.pending_prefix = Some(PendingPrefix::Add);
+            }
+            KeyCode::Char('r') => {
+                if app.selected_entry().is_some() {
+                    Self::start_input(app, InputAction::ConfirmDelete);
+                    effect.redraw = true;
+                }
+            }
+            KeyCode::Char('m') => {
+                app.pending_prefix = None;
+                app.mode = Mode::MarkerWaiting(MarkerAction::Set);
+                effect.redraw = true;
+            }
+            KeyCode::Char('g') => {
+                app.pending_prefix = None;
+                app.mode = Mode::MarkerWaiting(MarkerAction::Jump);
+                effect.redraw = true;
+            }
+            KeyCode::Char('s') => {
+                app.pending_prefix = Some(PendingPrefix::Settings);
+            }
+            KeyCode::Char('c') => {
+                Self::copy_selection(app, ClipboardOp::Copy);
+                app.pending_prefix = Some(PendingPrefix::Copy);
+            }
+            KeyCode::Char('x') => {
+                Self::copy_selection(app, ClipboardOp::Cut);
+            }
+            KeyCode::Char('p') => {
+                Self::paste_selection(app, tx);
+            }
+            _ => {}
+        }
+        effect
+    }
+
+    fn handle_input(
+        app: &mut App,
+        key: KeyEvent,
+        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    ) -> InputEffect {
+        let mut effect = InputEffect::default();
+        let Mode::Input(input) = &mut app.mode else {
+            return effect;
+        };
+        match input.action {
+            InputAction::Search => {
+                match key.code {
+                    KeyCode::Esc => {
+                        let selection_changed = app.clear_filter();
+                        app.mode = Mode::Normal;
+                        effect.redraw = true;
+                        if selection_changed {
+                            app.clear_preview();
+                            effect.request_preview = true;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        app.mode = Mode::Normal;
+                        effect.redraw = true;
+                    }
+                    KeyCode::Backspace => {
+                        input.buffer.pop();
+                        let selection_changed = app.update_filter(input.buffer.clone());
+                        effect.redraw = true;
+                        if selection_changed {
+                            app.clear_preview();
+                            effect.request_preview = true;
+                        }
+                    }
+                    KeyCode::Char(ch) if !ch.is_control() => {
+                        input.buffer.push(ch);
+                        let selection_changed = app.update_filter(input.buffer.clone());
+                        effect.redraw = true;
+                        if selection_changed {
+                            app.clear_preview();
+                            effect.request_preview = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            InputAction::AddFile | InputAction::AddDir => {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.mode = Mode::Normal;
+                        effect.redraw = true;
+                    }
+                    KeyCode::Enter => {
+                        if !input.buffer.trim().is_empty() {
+                            let name = input.buffer.trim().to_string();
+                            let path = app.current_dir.join(&name);
+                            let select = Some(path.clone());
+                            match input.action {
+                                InputAction::AddFile => {
+                                    let path = path.clone();
+                                    spawn_refresh(tx, select, async move { core::create_file(&path).await });
+                                }
+                                InputAction::AddDir => {
+                                    let path = path.clone();
+                                    spawn_refresh(tx, select, async move { core::create_dir(&path).await });
+                                }
+                                _ => {}
+                            }
+                        }
+                        app.mode = Mode::Normal;
+                        effect.redraw = true;
+                    }
+                    KeyCode::Backspace => {
+                        input.buffer.pop();
+                        effect.redraw = true;
+                    }
+                    KeyCode::Char(ch) if !ch.is_control() => {
+                        input.buffer.push(ch);
+                        effect.redraw = true;
+                    }
+                    _ => {}
+                }
+            }
+            InputAction::ConfirmDelete => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(entry) = app.selected_entry() {
+                        let path = entry.path.clone();
+                        spawn_refresh(tx, None, async move { core::remove_path(&path).await });
+                    }
+                    app.mode = Mode::Normal;
+                    effect.redraw = true;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    app.mode = Mode::Normal;
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
+        }
+        effect
+    }
+
+    fn handle_marker(
+        app: &mut App,
+        key: KeyEvent,
+        tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    ) -> InputEffect {
+        let mut effect = InputEffect::default();
+        let action = match &app.mode {
+            Mode::MarkerWaiting(action) => *action,
+            _ => return effect,
+        };
+        match key.code {
+            KeyCode::Char(marker) => {
+                match action {
+                    MarkerAction::Set => {
+                        let path = app
+                            .selected_entry()
+                            .map(|entry| {
+                                if entry.is_dir {
+                                    entry.path.clone()
+                                } else {
+                                    entry
+                                        .path
+                                        .parent()
+                                        .unwrap_or(&app.current_dir)
+                                        .to_path_buf()
+                                }
+                            })
+                            .unwrap_or_else(|| app.current_dir.clone());
+                        app.markers.set(marker, path);
+                        let save_task = app.markers.save_task();
+                        tokio::spawn(save_task);
+                    }
+                    MarkerAction::Jump => {
+                        if let Some(path) = app.markers.get(marker).cloned() {
+                            app.current_dir = path;
+                            app.pending_selection = None;
+                            app.selected = 0;
+                            app.clear_preview();
+                            app.refresh_dirs(tx);
+                            effect.redraw = true;
+                        }
+                    }
+                }
+                app.mode = Mode::Normal;
+                effect.redraw = true;
+            }
+            KeyCode::Esc => {
+                app.mode = Mode::Normal;
+                effect.redraw = true;
+            }
+            _ => {}
+        }
+        effect
+    }
+
+    fn start_input(app: &mut App, action: InputAction) {
+        let buffer = if matches!(action, InputAction::Search) {
+            app.filter.clone()
+        } else {
+            String::new()
+        };
+        app.pending_prefix = None;
+        app.mode = Mode::Input(InputState::new(action, buffer));
+    }
+
+    fn copy_selection(app: &mut App, op: ClipboardOp) {
+        if let Some(entry) = app.selected_entry() {
+            app.clipboard = Some(ClipboardEntry {
+                op,
+                path: entry.path.clone(),
+            });
+        }
+    }
+
+    fn paste_selection(app: &mut App, tx: &tokio_mpsc::UnboundedSender<AppEvent>) {
+        let Some(clipboard) = app.clipboard.clone() else {
+            return;
+        };
+        let Some(file_name) = clipboard.path.file_name() else {
+            return;
+        };
+        let dest = app.current_dir.join(file_name);
+        let select = Some(dest.clone());
+        match clipboard.op {
+            ClipboardOp::Cut => {
+                let src = clipboard.path.clone();
+                let dest = dest.clone();
+                spawn_refresh(tx, select, async move { core::rename_path(&src, &dest).await });
+                app.clipboard = None;
+            }
+            ClipboardOp::Copy => {
+                let src = clipboard.path.clone();
+                let dest = dest.clone();
+                spawn_refresh(tx, select, async move { core::copy_recursively(&src, &dest).await });
+            }
         }
     }
 }
@@ -349,6 +863,35 @@ fn spawn_image_worker(
     worker_tx
 }
 
+fn spawn_refresh<F>(
+    tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    select: Option<PathBuf>,
+    action: F,
+) where
+    F: Future<Output = std::io::Result<()>> + Send + 'static,
+{
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let _ = action.await;
+        let _ = tx.send(AppEvent::Action(ActionResult::Refresh { select }));
+    });
+}
+
+fn spawn_open(path: PathBuf) {
+    tokio::task::spawn_blocking(move || {
+        let _ = open::that(path);
+    });
+}
+
+fn spawn_copy_path(path: PathBuf) {
+    let value = path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        if let Ok(mut clipboard) = Clipboard::new() {
+            let _ = clipboard.set_text(value);
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
@@ -380,35 +923,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if app.select_up() {
-                            redraw = true;
-                            request_preview = true;
-                        }
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if app.select_down() {
-                            redraw = true;
-                            request_preview = true;
-                        }
-                    }
-                    KeyCode::Left | KeyCode::Char('h') => {
-                        if app.navigate_parent(&tx).await? {
-                            redraw = true;
-                        }
-                    }
-                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
-                        if app.enter_selected(&tx).await? {
-                            redraw = true;
-                        }
-                    }
-                    KeyCode::Char('m') => {
-                        app.toggle_metadata();
-                        redraw = true;
-                    }
-                    _ => {}
+                let effect = InputHandler::handle_key(&mut app, key, &tx);
+                if effect.exit {
+                    break;
+                }
+                if effect.redraw {
+                    redraw = true;
+                }
+                if effect.request_preview {
+                    request_preview = true;
                 }
             }
             AppEvent::Input(Event::Resize(_, _)) => {
@@ -428,6 +951,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if id != app.listing_id {
                     continue;
                 }
+                let selected_path = app.selected_entry().map(|entry| entry.path.clone());
                 let list = match target {
                     DirTarget::Parent => &mut app.parent_entries,
                     DirTarget::Current => &mut app.current_entries,
@@ -435,23 +959,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 list.extend(entries);
                 if done {
                     core::sort_entries(list);
-                    if matches!(target, DirTarget::Current) {
-                        if let Some(path) = app.pending_selection.take() {
-                            if let Some(index) = app
-                                .current_entries
-                                .iter()
-                                .position(|entry| entry.path == path)
-                            {
-                                app.selected = index;
-                            }
-                        }
-                    }
                 }
                 if matches!(target, DirTarget::Current) {
-                    app.clamp_selection();
-                    if !app.preview_pending
-                        && app.preview.is_none()
-                        && !app.current_entries.is_empty()
+                    let preferred = if done {
+                        app.pending_selection.take().or(selected_path)
+                    } else {
+                        selected_path
+                    };
+                    let selection_changed = app.apply_filter(preferred);
+                    if selection_changed {
+                        app.clear_preview();
+                        request_preview = true;
+                    }
+                    if !app.preview_pending && app.preview.is_none() && !app.filtered_indices.is_empty()
                     {
                         request_preview = true;
                     }
@@ -465,6 +985,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         redraw = true;
                     }
                 }
+            }
+            AppEvent::Action(ActionResult::Refresh { select }) => {
+                if let Some(path) = select {
+                    app.pending_selection = Some(path);
+                }
+                app.refresh_dirs(&tx);
+                redraw = true;
             }
             _ => {}
         }

@@ -66,7 +66,11 @@ pub async fn load(path: &Path, config: &Config) -> Result<Preview, PreviewError>
     buf.truncate(read_len);
 
     let mismatch = if config.check_mismatch {
-        Some(security::check_buffer_mismatch(path, &buf))
+        Some(
+            security::check_file_mismatch(path)
+                .await
+                .unwrap_or(MismatchStatus::Unknown),
+        )
     } else {
         None
     };

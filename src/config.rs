@@ -103,6 +103,8 @@ impl Default for Icons {
 #[serde(default)]
 pub struct MetadataBar {
     pub enabled: bool,
+    pub show_permissions: bool,
+    pub show_dates: bool,
     pub icons: MetadataIcons,
 }
 
@@ -110,6 +112,8 @@ impl Default for MetadataBar {
     fn default() -> Self {
         Self {
             enabled: false,
+            show_permissions: true,
+            show_dates: true,
             icons: MetadataIcons::default(),
         }
     }

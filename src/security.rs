@@ -1,8 +1,5 @@
 use std::path::Path;
-use tokio::fs::{self, File};
-use tokio::io::AsyncReadExt;
-
-const READ_LIMIT: usize = 8192;
+use tokio::fs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedType {
@@ -28,16 +25,12 @@ pub async fn check_file_mismatch(path: &Path) -> Result<MismatchStatus, Security
     if !metadata.is_file() {
         return Ok(MismatchStatus::Unknown);
     }
-
-    let mut file = File::open(path).await?;
-    let mut buf = vec![0u8; READ_LIMIT];
-    let read_len = file.read(&mut buf).await?;
-    if read_len == 0 {
-        return Ok(MismatchStatus::Unknown);
-    }
-    buf.truncate(read_len);
-
-    Ok(check_buffer_mismatch(path, &buf))
+    let path = path.to_path_buf();
+    let status = tokio::task::spawn_blocking(move || check_path_mismatch(&path))
+        .await
+        .ok()
+        .unwrap_or(MismatchStatus::Unknown);
+    Ok(status)
 }
 
 fn extensions_match(extension: &str, detected: &str) -> bool {
@@ -50,6 +43,30 @@ pub fn check_buffer_mismatch(path: &Path, buf: &[u8]) -> MismatchStatus {
     }
 
     let detected = match infer::get(buf) {
+        Some(kind) => DetectedType {
+            extension: kind.extension().to_string(),
+            mime: kind.mime_type().to_string(),
+        },
+        None => return MismatchStatus::Unknown,
+    };
+
+    let extension = match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if !ext.is_empty() => ext.to_ascii_lowercase(),
+        _ => return MismatchStatus::Unknown,
+    };
+
+    if extensions_match(&extension, &detected.extension) {
+        MismatchStatus::Match
+    } else {
+        MismatchStatus::Mismatch {
+            detected,
+            extension,
+        }
+    }
+}
+
+fn check_path_mismatch(path: &Path) -> MismatchStatus {
+    let detected = match infer::get_from_path(path).ok().flatten() {
         Some(kind) => DetectedType {
             extension: kind.extension().to_string(),
             mime: kind.mime_type().to_string(),
