@@ -195,6 +195,8 @@ impl App {
     }
 
     fn ui_state(&mut self) -> ui::UiState<'_> {
+        let input = self.input_prompt();
+        let image_state = self.image_state.as_mut();
         ui::UiState {
             config: &self.config,
             parent: &self.parent_entries,
@@ -207,8 +209,8 @@ impl App {
             show_permissions: self.show_permissions,
             show_dates: self.show_dates,
             metadata: self.preview.as_ref().and_then(|preview| preview.metadata.as_ref()),
-            image_state: self.image_state.as_mut(),
-            input: self.input_prompt(),
+            image_state,
+            input,
         }
     }
 
@@ -570,98 +572,107 @@ impl InputHandler {
         tx: &tokio_mpsc::UnboundedSender<AppEvent>,
     ) -> InputEffect {
         let mut effect = InputEffect::default();
-        let Mode::Input(input) = &mut app.mode else {
-            return effect;
+        let mode = std::mem::replace(&mut app.mode, Mode::Normal);
+        let mut input = match mode {
+            Mode::Input(input) => input,
+            other => {
+                app.mode = other;
+                return effect;
+            }
         };
+
+        let mut keep_input = true;
         match input.action {
-            InputAction::Search => {
-                match key.code {
-                    KeyCode::Esc => {
-                        let selection_changed = app.clear_filter();
-                        app.mode = Mode::Normal;
-                        effect.redraw = true;
-                        if selection_changed {
-                            app.clear_preview();
-                            effect.request_preview = true;
-                        }
+            InputAction::Search => match key.code {
+                KeyCode::Esc => {
+                    let selection_changed = app.clear_filter();
+                    keep_input = false;
+                    effect.redraw = true;
+                    if selection_changed {
+                        app.clear_preview();
+                        effect.request_preview = true;
                     }
-                    KeyCode::Enter => {
-                        app.mode = Mode::Normal;
-                        effect.redraw = true;
-                    }
-                    KeyCode::Backspace => {
-                        input.buffer.pop();
-                        let selection_changed = app.update_filter(input.buffer.clone());
-                        effect.redraw = true;
-                        if selection_changed {
-                            app.clear_preview();
-                            effect.request_preview = true;
-                        }
-                    }
-                    KeyCode::Char(ch) if !ch.is_control() => {
-                        input.buffer.push(ch);
-                        let selection_changed = app.update_filter(input.buffer.clone());
-                        effect.redraw = true;
-                        if selection_changed {
-                            app.clear_preview();
-                            effect.request_preview = true;
-                        }
-                    }
-                    _ => {}
                 }
-            }
-            InputAction::AddFile | InputAction::AddDir => {
-                match key.code {
-                    KeyCode::Esc => {
-                        app.mode = Mode::Normal;
-                        effect.redraw = true;
+                KeyCode::Enter => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    let selection_changed = app.update_filter(input.buffer.clone());
+                    effect.redraw = true;
+                    if selection_changed {
+                        app.clear_preview();
+                        effect.request_preview = true;
                     }
-                    KeyCode::Enter => {
-                        if !input.buffer.trim().is_empty() {
-                            let name = input.buffer.trim().to_string();
-                            let path = app.current_dir.join(&name);
-                            let select = Some(path.clone());
-                            match input.action {
-                                InputAction::AddFile => {
-                                    let path = path.clone();
-                                    spawn_refresh(tx, select, async move { core::create_file(&path).await });
-                                }
-                                InputAction::AddDir => {
-                                    let path = path.clone();
-                                    spawn_refresh(tx, select, async move { core::create_dir(&path).await });
-                                }
-                                _ => {}
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    let selection_changed = app.update_filter(input.buffer.clone());
+                    effect.redraw = true;
+                    if selection_changed {
+                        app.clear_preview();
+                        effect.request_preview = true;
+                    }
+                }
+                _ => {}
+            },
+            InputAction::AddFile | InputAction::AddDir => match key.code {
+                KeyCode::Esc => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    if !input.buffer.trim().is_empty() {
+                        let name = input.buffer.trim().to_string();
+                        let path = app.current_dir.join(&name);
+                        let select = Some(path.clone());
+                        match input.action {
+                            InputAction::AddFile => {
+                                let path = path.clone();
+                                spawn_refresh(tx, select, async move { core::create_file(&path).await });
                             }
+                            InputAction::AddDir => {
+                                let path = path.clone();
+                                spawn_refresh(tx, select, async move { core::create_dir(&path).await });
+                            }
+                            _ => {}
                         }
-                        app.mode = Mode::Normal;
-                        effect.redraw = true;
                     }
-                    KeyCode::Backspace => {
-                        input.buffer.pop();
-                        effect.redraw = true;
-                    }
-                    KeyCode::Char(ch) if !ch.is_control() => {
-                        input.buffer.push(ch);
-                        effect.redraw = true;
-                    }
-                    _ => {}
+                    keep_input = false;
+                    effect.redraw = true;
                 }
-            }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
             InputAction::ConfirmDelete => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if let Some(entry) = app.selected_entry() {
                         let path = entry.path.clone();
                         spawn_refresh(tx, None, async move { core::remove_path(&path).await });
                     }
-                    app.mode = Mode::Normal;
+                    keep_input = false;
                     effect.redraw = true;
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    app.mode = Mode::Normal;
+                    keep_input = false;
                     effect.redraw = true;
                 }
                 _ => {}
             },
+        }
+
+        if keep_input {
+            app.mode = Mode::Input(input);
+        } else {
+            app.mode = Mode::Normal;
         }
         effect
     }

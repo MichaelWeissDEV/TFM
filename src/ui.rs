@@ -258,7 +258,7 @@ pub fn highlight_preview(preview: &Preview) -> Option<HighlightedText> {
         let ranges = highlighter
             .highlight_line(line, syntax_set)
             .unwrap_or_default();
-        let spans = ranges
+        let spans: Vec<Span<'static>> = ranges
             .into_iter()
             .map(|(style, content)| Span::styled(content.to_string(), syntect_style(style)))
             .collect();
