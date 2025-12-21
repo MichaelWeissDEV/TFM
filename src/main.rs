@@ -92,7 +92,6 @@ enum PendingPrefix {
     Add,
     Settings,
     Copy,
-    List,
     View,
     Delete,
 }
@@ -602,14 +601,6 @@ impl InputHandler {
                 }
                 return Self::handle_normal_key(app, key, tx);
             }
-            PendingPrefix::List => {
-                if matches!(key.code, KeyCode::Char('m')) {
-                    app.open_marker_list();
-                    effect.redraw = true;
-                    return effect;
-                }
-                return Self::handle_normal_key(app, key, tx);
-            }
             PendingPrefix::View => match key.code {
                 KeyCode::Char('p') => {
                     app.show_list_permissions = !app.show_list_permissions;
@@ -661,13 +652,10 @@ impl InputHandler {
                     effect.redraw = true;
                 }
             }
-            KeyCode::Right | KeyCode::Enter => {
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
                 if app.activate_selected(tx) {
                     effect.redraw = true;
                 }
-            }
-            KeyCode::Char('l') => {
-                app.pending_prefix = Some(PendingPrefix::List);
             }
             KeyCode::Char('/') => {
                 Self::start_input(app, InputAction::Search);
@@ -687,6 +675,10 @@ impl InputHandler {
             }
             KeyCode::Char('m') => {
                 Self::start_input(app, InputAction::MarkerSet);
+                effect.redraw = true;
+            }
+            KeyCode::Char('M') => {
+                app.open_marker_list();
                 effect.redraw = true;
             }
             KeyCode::Char('g') => {
