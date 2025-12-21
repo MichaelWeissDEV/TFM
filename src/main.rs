@@ -37,12 +37,18 @@ enum DirTarget {
     Current,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InputAction {
     Search,
     AddFile,
     AddDir,
     Rename,
+    MarkerSet,
+    MarkerJump,
+    MarkerRename { name: String },
+    MarkerEditPath { name: String },
+    MarkerCreateName,
+    MarkerCreatePath { name: String },
     ConfirmDelete,
 }
 
@@ -58,27 +64,27 @@ impl InputState {
     }
 
     fn title(&self) -> &'static str {
-        match self.action {
+        match self.action.clone() {
             InputAction::Search => "Search",
             InputAction::AddFile => "Add File",
             InputAction::AddDir => "Add Dir",
             InputAction::Rename => "Rename",
+            InputAction::MarkerSet => "Set Marker",
+            InputAction::MarkerJump => "Jump Marker",
+            InputAction::MarkerRename { .. } => "Rename Marker",
+            InputAction::MarkerEditPath { .. } => "Edit Marker Path",
+            InputAction::MarkerCreateName => "New Marker Name",
+            InputAction::MarkerCreatePath { .. } => "New Marker Path",
             InputAction::ConfirmDelete => "Delete",
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MarkerAction {
-    Set,
-    Jump,
 }
 
 #[derive(Debug)]
 enum Mode {
     Normal,
     Input(InputState),
-    MarkerWaiting(MarkerAction),
+    MarkerList,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +92,9 @@ enum PendingPrefix {
     Add,
     Settings,
     Copy,
+    List,
+    View,
+    Delete,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +107,66 @@ enum ClipboardOp {
 struct ClipboardEntry {
     op: ClipboardOp,
     path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct MarkerListEntry {
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Debug)]
+struct MarkerListState {
+    entries: Vec<MarkerListEntry>,
+    selected: usize,
+}
+
+impl MarkerListState {
+    fn new(markers: &MarkerStore) -> Self {
+        let mut entries: Vec<MarkerListEntry> = markers
+            .entries()
+            .map(|(name, path)| MarkerListEntry {
+                name: name.clone(),
+                path: path.clone(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        Self {
+            entries,
+            selected: 0,
+        }
+    }
+
+    fn selected_entry(&self) -> Option<&MarkerListEntry> {
+        self.entries.get(self.selected)
+    }
+
+    fn sync(&mut self, markers: &MarkerStore, preferred: Option<&str>) {
+        let current = preferred.map(|name| name.to_string()).or_else(|| {
+            self.selected_entry()
+                .map(|entry| entry.name.clone())
+        });
+        let mut entries: Vec<MarkerListEntry> = markers
+            .entries()
+            .map(|(name, path)| MarkerListEntry {
+                name: name.clone(),
+                path: path.clone(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        let mut selected = 0usize;
+        if let Some(name) = current {
+            if let Some(pos) = entries.iter().position(|entry| entry.name == name) {
+                selected = pos;
+            }
+        }
+        self.entries = entries;
+        if !self.entries.is_empty() {
+            self.selected = selected.min(self.entries.len() - 1);
+        } else {
+            self.selected = 0;
+        }
+    }
 }
 
 enum AppEvent {
@@ -141,12 +210,15 @@ struct App {
     filter: String,
     mode: Mode,
     pending_prefix: Option<PendingPrefix>,
+    marker_list: Option<MarkerListState>,
     preview: Option<Preview>,
     highlighted_preview: Option<ui::HighlightedText>,
     show_metadata: bool,
     show_permissions: bool,
     show_dates: bool,
     show_owner: bool,
+    show_list_permissions: bool,
+    show_list_owner: bool,
     preview_request_id: u64,
     preview_pending: bool,
     listing_id: u64,
@@ -172,6 +244,8 @@ impl App {
             show_permissions: config.metadata_bar.show_permissions,
             show_dates: config.metadata_bar.show_dates,
             show_owner: config.metadata_bar.show_owner,
+            show_list_permissions: false,
+            show_list_owner: false,
             config,
             picker,
             current_dir,
@@ -182,6 +256,7 @@ impl App {
             filter: String::new(),
             mode: Mode::Normal,
             pending_prefix: None,
+            marker_list: None,
             preview: None,
             highlighted_preview: None,
             preview_request_id: 0,
@@ -201,6 +276,17 @@ impl App {
     fn ui_state(&mut self) -> ui::UiState<'_> {
         let input = self.input_prompt();
         let image_state = self.image_state.as_mut();
+        let marker_popup = self.marker_list.as_ref().map(|list| ui::MarkerPopup {
+            items: list
+                .entries
+                .iter()
+                .map(|entry| ui::MarkerListItem {
+                    name: entry.name.clone(),
+                    path: entry.path.to_string_lossy().to_string(),
+                })
+                .collect(),
+            selected: list.selected,
+        });
         ui::UiState {
             config: &self.config,
             parent: &self.parent_entries,
@@ -213,34 +299,29 @@ impl App {
             show_permissions: self.show_permissions,
             show_dates: self.show_dates,
             show_owner: self.show_owner,
+            show_list_permissions: self.show_list_permissions,
+            show_list_owner: self.show_list_owner,
             metadata: self.preview.as_ref().and_then(|preview| preview.metadata.as_ref()),
             image_state,
             input,
+            marker_popup,
         }
     }
 
     fn input_prompt(&self) -> Option<ui::InputPrompt> {
         match &self.mode {
             Mode::Input(input) => {
-                let value = match input.action {
-                    InputAction::ConfirmDelete => "y/n".to_string(),
-                    _ => format!("{}|", input.buffer),
+                let value = if matches!(input.action.clone(), InputAction::ConfirmDelete) {
+                    "y/n".to_string()
+                } else {
+                    format!("{}|", input.buffer)
                 };
                 Some(ui::InputPrompt {
                     title: input.title().to_string(),
                     value,
                 })
             }
-            Mode::MarkerWaiting(action) => {
-                let title = match action {
-                    MarkerAction::Set => "Set Marker",
-                    MarkerAction::Jump => "Jump Marker",
-                };
-                Some(ui::InputPrompt {
-                    title: title.to_string(),
-                    value: "|".to_string(),
-                })
-            }
+            Mode::MarkerList => None,
             Mode::Normal => None,
         }
     }
@@ -420,6 +501,17 @@ impl App {
         self.filter.clear();
         self.apply_filter(selected_path)
     }
+
+    fn open_marker_list(&mut self) {
+        self.marker_list = Some(MarkerListState::new(&self.markers));
+        self.mode = Mode::MarkerList;
+    }
+
+    fn sync_marker_list(&mut self, preferred: Option<&str>) {
+        if let Some(list) = self.marker_list.as_mut() {
+            list.sync(&self.markers, preferred);
+        }
+    }
 }
 
 struct InputHandler;
@@ -432,7 +524,7 @@ impl InputHandler {
     ) -> InputEffect {
         match &mut app.mode {
             Mode::Input(_) => Self::handle_input(app, key, tx),
-            Mode::MarkerWaiting(_) => Self::handle_marker(app, key, tx),
+            Mode::MarkerList => Self::handle_marker_list(app, key, tx),
             Mode::Normal => Self::handle_normal(app, key, tx),
         }
     }
@@ -510,6 +602,37 @@ impl InputHandler {
                 }
                 return Self::handle_normal_key(app, key, tx);
             }
+            PendingPrefix::List => {
+                if matches!(key.code, KeyCode::Char('m')) {
+                    app.open_marker_list();
+                    effect.redraw = true;
+                    return effect;
+                }
+                return Self::handle_normal_key(app, key, tx);
+            }
+            PendingPrefix::View => match key.code {
+                KeyCode::Char('p') => {
+                    app.show_list_permissions = !app.show_list_permissions;
+                    effect.redraw = true;
+                    return effect;
+                }
+                KeyCode::Char('o') => {
+                    app.show_list_owner = !app.show_list_owner;
+                    effect.redraw = true;
+                    return effect;
+                }
+                _ => return Self::handle_normal_key(app, key, tx),
+            },
+            PendingPrefix::Delete => {
+                if matches!(key.code, KeyCode::Char('d')) {
+                    if app.selected_entry().is_some() {
+                        Self::start_input(app, InputAction::ConfirmDelete);
+                        effect.redraw = true;
+                    }
+                    return effect;
+                }
+                return Self::handle_normal_key(app, key, tx);
+            }
         }
     }
 
@@ -538,10 +661,13 @@ impl InputHandler {
                     effect.redraw = true;
                 }
             }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+            KeyCode::Right | KeyCode::Enter => {
                 if app.activate_selected(tx) {
                     effect.redraw = true;
                 }
+            }
+            KeyCode::Char('l') => {
+                app.pending_prefix = Some(PendingPrefix::List);
             }
             KeyCode::Char('/') => {
                 Self::start_input(app, InputAction::Search);
@@ -557,23 +683,21 @@ impl InputHandler {
                 }
             }
             KeyCode::Char('d') => {
-                if app.selected_entry().is_some() {
-                    Self::start_input(app, InputAction::ConfirmDelete);
-                    effect.redraw = true;
-                }
+                app.pending_prefix = Some(PendingPrefix::Delete);
             }
             KeyCode::Char('m') => {
-                app.pending_prefix = None;
-                app.mode = Mode::MarkerWaiting(MarkerAction::Set);
+                Self::start_input(app, InputAction::MarkerSet);
                 effect.redraw = true;
             }
             KeyCode::Char('g') => {
-                app.pending_prefix = None;
-                app.mode = Mode::MarkerWaiting(MarkerAction::Jump);
+                Self::start_input(app, InputAction::MarkerJump);
                 effect.redraw = true;
             }
             KeyCode::Char('s') => {
                 app.pending_prefix = Some(PendingPrefix::Settings);
+            }
+            KeyCode::Char('v') => {
+                app.pending_prefix = Some(PendingPrefix::View);
             }
             KeyCode::Char('c') => {
                 Self::copy_selection(app, ClipboardOp::Copy);
@@ -606,7 +730,7 @@ impl InputHandler {
         };
 
         let mut keep_input = true;
-        match input.action {
+        match input.action.clone() {
             InputAction::Search => match key.code {
                 KeyCode::Esc => {
                     let selection_changed = app.clear_filter();
@@ -651,16 +775,13 @@ impl InputHandler {
                         let name = input.buffer.trim().to_string();
                         let path = app.current_dir.join(&name);
                         let select = Some(path.clone());
-                        match input.action {
-                            InputAction::AddFile => {
-                                let path = path.clone();
-                                spawn_refresh(tx, select, async move { core::create_file(&path).await });
-                            }
-                            InputAction::AddDir => {
-                                let path = path.clone();
-                                spawn_refresh(tx, select, async move { core::create_dir(&path).await });
-                            }
-                            _ => {}
+                        let is_dir = matches!(input.action, InputAction::AddDir);
+                        if is_dir {
+                            let path = path.clone();
+                            spawn_refresh(tx, select, async move { core::create_dir(&path).await });
+                        } else {
+                            let path = path.clone();
+                            spawn_refresh(tx, select, async move { core::create_file(&path).await });
                         }
                     }
                     keep_input = false;
@@ -707,6 +828,172 @@ impl InputHandler {
                 }
                 _ => {}
             },
+            InputAction::MarkerSet => match key.code {
+                KeyCode::Esc => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    let name = input.buffer.trim();
+                    if !name.is_empty() {
+                        let name = name.to_string();
+                        app.markers.set(name.clone(), app.current_dir.clone());
+                        let save_task = app.markers.save_task();
+                        tokio::spawn(save_task);
+                        app.sync_marker_list(Some(&name));
+                    }
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
+            InputAction::MarkerJump => match key.code {
+                KeyCode::Esc => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    let name = input.buffer.trim();
+                    if let Some(path) = app.markers.get(name).cloned() {
+                        app.current_dir = path;
+                        app.pending_selection = None;
+                        app.selected = 0;
+                        app.clear_preview();
+                        app.refresh_dirs(tx);
+                        effect.redraw = true;
+                    }
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
+            InputAction::MarkerRename { name } => match key.code {
+                KeyCode::Esc => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    let new_name = input.buffer.trim();
+                    if !new_name.is_empty() {
+                        let new_name = new_name.to_string();
+                        if app.markers.rename(&name, new_name.clone()) {
+                            let save_task = app.markers.save_task();
+                            tokio::spawn(save_task);
+                            app.sync_marker_list(Some(&new_name));
+                        }
+                    }
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
+            InputAction::MarkerEditPath { name } => match key.code {
+                KeyCode::Esc => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    let path = input.buffer.trim();
+                    if !path.is_empty() {
+                        app.markers.set(name.clone(), PathBuf::from(path));
+                        let save_task = app.markers.save_task();
+                        tokio::spawn(save_task);
+                        app.sync_marker_list(Some(&name));
+                    }
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
+            InputAction::MarkerCreateName => match key.code {
+                KeyCode::Esc => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    let name = input.buffer.trim();
+                    if !name.is_empty() {
+                        let buffer = app.current_dir.to_string_lossy().to_string();
+                        input = InputState::new(
+                            InputAction::MarkerCreatePath {
+                                name: name.to_string(),
+                            },
+                            buffer,
+                        );
+                        effect.redraw = true;
+                    } else {
+                        keep_input = false;
+                        effect.redraw = true;
+                    }
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
+            InputAction::MarkerCreatePath { name } => match key.code {
+                KeyCode::Esc => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    let path = input.buffer.trim();
+                    if !path.is_empty() {
+                        app.markers.set(name.clone(), PathBuf::from(path));
+                        let save_task = app.markers.save_task();
+                        tokio::spawn(save_task);
+                        app.sync_marker_list(Some(&name));
+                    }
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    effect.redraw = true;
+                }
+                _ => {}
+            },
             InputAction::ConfirmDelete => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if let Some(entry) = app.selected_entry() {
@@ -726,74 +1013,129 @@ impl InputHandler {
 
         if keep_input {
             app.mode = Mode::Input(input);
+        } else if app.marker_list.is_some() {
+            app.mode = Mode::MarkerList;
         } else {
             app.mode = Mode::Normal;
         }
         effect
     }
 
-    fn handle_marker(
+    fn handle_marker_list(
         app: &mut App,
         key: KeyEvent,
         tx: &tokio_mpsc::UnboundedSender<AppEvent>,
     ) -> InputEffect {
         let mut effect = InputEffect::default();
-        let action = match &app.mode {
-            Mode::MarkerWaiting(action) => *action,
-            _ => return effect,
-        };
-        match key.code {
-            KeyCode::Char(marker) => {
-                match action {
-                    MarkerAction::Set => {
-                        let path = app
-                            .selected_entry()
-                            .map(|entry| {
-                                if entry.is_dir {
-                                    entry.path.clone()
-                                } else {
-                                    entry
-                                        .path
-                                        .parent()
-                                        .unwrap_or(&app.current_dir)
-                                        .to_path_buf()
-                                }
-                            })
-                            .unwrap_or_else(|| app.current_dir.clone());
-                        app.markers.set(marker, path);
-                        let save_task = app.markers.save_task();
-                        tokio::spawn(save_task);
-                    }
-                    MarkerAction::Jump => {
-                        if let Some(path) = app.markers.get(marker).cloned() {
-                            app.current_dir = path;
-                            app.pending_selection = None;
-                            app.selected = 0;
-                            app.clear_preview();
-                            app.refresh_dirs(tx);
-                            effect.redraw = true;
-                        }
+        enum MarkerListAction {
+            Jump(PathBuf),
+            StartInput(InputAction),
+            Delete(String),
+        }
+
+        let mut action: Option<MarkerListAction> = None;
+        let mut close = false;
+        {
+            let Some(list) = app.marker_list.as_mut() else {
+                app.mode = Mode::Normal;
+                return effect;
+            };
+            match key.code {
+                KeyCode::Esc => {
+                    close = true;
+                    effect.redraw = true;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if list.selected > 0 {
+                        list.selected -= 1;
+                        effect.redraw = true;
                     }
                 }
-                app.mode = Mode::Normal;
-                effect.redraw = true;
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if list.selected + 1 < list.entries.len() {
+                        list.selected += 1;
+                        effect.redraw = true;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(entry) = list.selected_entry() {
+                        action = Some(MarkerListAction::Jump(entry.path.clone()));
+                    }
+                    close = true;
+                    effect.redraw = true;
+                }
+                KeyCode::Char('r') => {
+                    if let Some(entry) = list.selected_entry() {
+                        action = Some(MarkerListAction::StartInput(InputAction::MarkerRename {
+                            name: entry.name.clone(),
+                        }));
+                        effect.redraw = true;
+                    }
+                }
+                KeyCode::Char('e') => {
+                    if let Some(entry) = list.selected_entry() {
+                        action = Some(MarkerListAction::StartInput(InputAction::MarkerEditPath {
+                            name: entry.name.clone(),
+                        }));
+                        effect.redraw = true;
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if let Some(entry) = list.selected_entry() {
+                        action = Some(MarkerListAction::Delete(entry.name.clone()));
+                        effect.redraw = true;
+                    }
+                }
+                KeyCode::Char('a') => {
+                    action = Some(MarkerListAction::StartInput(InputAction::MarkerCreateName));
+                    effect.redraw = true;
+                }
+                _ => {}
             }
-            KeyCode::Esc => {
-                app.mode = Mode::Normal;
-                effect.redraw = true;
+        }
+
+        match action {
+            Some(MarkerListAction::Jump(path)) => {
+                app.current_dir = path;
+                app.pending_selection = None;
+                app.selected = 0;
+                app.clear_preview();
+                app.refresh_dirs(tx);
             }
-            _ => {}
+            Some(MarkerListAction::StartInput(action)) => {
+                Self::start_input(app, action);
+            }
+            Some(MarkerListAction::Delete(name)) => {
+                if app.markers.remove(&name) {
+                    let save_task = app.markers.save_task();
+                    tokio::spawn(save_task);
+                    app.sync_marker_list(None);
+                }
+            }
+            None => {}
+        }
+
+        if close {
+            app.marker_list = None;
+            app.mode = Mode::Normal;
         }
         effect
     }
 
     fn start_input(app: &mut App, action: InputAction) {
-        let buffer = match action {
+        let buffer = match &action {
             InputAction::Search => app.filter.clone(),
             InputAction::Rename => app
                 .selected_entry()
                 .map(|entry| entry.name.clone())
                 .unwrap_or_default(),
+            InputAction::MarkerRename { name } => name.clone(),
+            InputAction::MarkerEditPath { name } => app
+                .markers
+                .get(name)
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            InputAction::MarkerCreatePath { .. } => app.current_dir.to_string_lossy().to_string(),
             _ => String::new(),
         };
         app.pending_prefix = None;

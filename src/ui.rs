@@ -83,6 +83,16 @@ pub struct InputPrompt {
     pub value: String,
 }
 
+pub struct MarkerListItem {
+    pub name: String,
+    pub path: String,
+}
+
+pub struct MarkerPopup {
+    pub items: Vec<MarkerListItem>,
+    pub selected: usize,
+}
+
 pub type HighlightedText = Text<'static>;
 
 pub struct UiState<'a> {
@@ -97,9 +107,12 @@ pub struct UiState<'a> {
     pub show_permissions: bool,
     pub show_dates: bool,
     pub show_owner: bool,
+    pub show_list_permissions: bool,
+    pub show_list_owner: bool,
     pub metadata: Option<&'a FileMetadata>,
     pub image_state: Option<&'a mut ThreadProtocol>,
     pub input: Option<InputPrompt>,
+    pub marker_popup: Option<MarkerPopup>,
 }
 
 pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
@@ -135,7 +148,7 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
         ])
         .split(layout[0]);
 
-    let parent_items = list_items(state.config, state.parent, None);
+    let parent_items = list_items(state.config, state.parent, None, false, false);
     let parent_list = List::new(parent_items).block(
         Block::default()
             .borders(Borders::ALL)
@@ -146,7 +159,13 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
     );
     frame.render_widget(parent_list, areas[0]);
 
-    let current_items = list_items(state.config, state.current, Some(state.current_indices));
+    let current_items = list_items(
+        state.config,
+        state.current,
+        Some(state.current_indices),
+        state.show_list_permissions,
+        state.show_list_owner,
+    );
     let current_list = List::new(current_items)
         .block(
             Block::default()
@@ -227,6 +246,33 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
         frame.render_widget(metadata, layout[1]);
     }
 
+    if let Some(marker_popup) = state.marker_popup {
+        let overlay_area = marker_rect(frame.area());
+        frame.render_widget(Clear, overlay_area);
+        let items: Vec<ListItem<'static>> = marker_popup
+            .items
+            .iter()
+            .map(|item| ListItem::new(format!("{}  {}", item.name, item.path)))
+            .collect();
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Markers")
+                    .style(base_style)
+                    .border_style(accent_style)
+                    .title_style(accent_style),
+            )
+            .highlight_style(selection_style)
+            .highlight_symbol("> ");
+        let mut list_state = ListState::default();
+        if !marker_popup.items.is_empty() {
+            let selected = marker_popup.selected.min(marker_popup.items.len() - 1);
+            list_state.select(Some(selected));
+        }
+        frame.render_stateful_widget(list, overlay_area, &mut list_state);
+    }
+
     if let Some(input) = state.input {
         let overlay_area = input_rect(areas[1]);
         frame.render_widget(Clear, overlay_area);
@@ -273,22 +319,31 @@ fn list_items(
     config: &Config,
     entries: &[FileEntry],
     indices: Option<&[usize]>,
+    show_permissions: bool,
+    show_owner: bool,
 ) -> Vec<ListItem<'static>> {
     let iter: Box<dyn Iterator<Item = &FileEntry>> = match indices {
         Some(indices) => Box::new(indices.iter().filter_map(|&index| entries.get(index))),
         None => Box::new(entries.iter()),
     };
-    iter.map(|entry| ListItem::new(entry_label(config, entry)))
+    iter.map(|entry| ListItem::new(entry_label(config, entry, show_permissions, show_owner)))
         .collect()
 }
 
-fn entry_label(config: &Config, entry: &FileEntry) -> String {
+fn entry_label(config: &Config, entry: &FileEntry, show_permissions: bool, show_owner: bool) -> String {
     let icon = if entry.is_dir {
         &config.icons.folder
     } else {
         &config.icons.file
     };
-    format!("{icon} {}", entry.name)
+    let mut label = format!("{icon} {}", entry.name);
+    if show_permissions {
+        label.push_str(&format!("  {}", entry.permissions));
+    }
+    if show_owner {
+        label.push_str(&format!("  {}", entry.owner));
+    }
+    label
 }
 
 fn preview_title(preview: &Preview) -> (String, bool) {
@@ -349,6 +404,19 @@ fn metadata_text(
 fn input_rect(area: Rect) -> Rect {
     let width = (area.width * 3 / 4).max(10u16).min(area.width);
     let height = 3u16.min(area.height.max(1u16));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn marker_rect(area: Rect) -> Rect {
+    let width = (area.width * 3 / 4).max(20u16).min(area.width);
+    let height = (area.height * 3 / 5).max(6u16).min(area.height);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect {

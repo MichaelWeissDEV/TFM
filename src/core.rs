@@ -5,21 +5,29 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio_stream::wrappers::ReadDirStream;
 
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
 #[derive(Debug, Clone)]
 pub struct FileEntry {
     pub name: String,
     pub path: PathBuf,
     pub is_dir: bool,
+    pub permissions: String,
+    pub owner: String,
 }
 
 impl FileEntry {
     pub async fn from_dir_entry(entry: fs::DirEntry) -> Result<Self, std::io::Error> {
         let file_type = entry.file_type().await?;
+        let metadata = entry.metadata().await?;
         let name = entry.file_name().to_string_lossy().to_string();
         Ok(FileEntry {
             name,
             path: entry.path(),
             is_dir: file_type.is_dir(),
+            permissions: permissions_string(&metadata),
+            owner: owner_string(&metadata),
         })
     }
 }
@@ -102,4 +110,54 @@ pub async fn copy_recursively(src: &Path, dest: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn permissions_string(metadata: &std::fs::Metadata) -> String {
+    let mode = metadata.permissions().mode();
+    let mut output = String::with_capacity(9);
+    output.push(if mode & 0o400 != 0 { 'r' } else { '-' });
+    output.push(if mode & 0o200 != 0 { 'w' } else { '-' });
+    output.push(match (mode & 0o100 != 0, mode & 0o4000 != 0) {
+        (true, true) => 's',
+        (false, true) => 'S',
+        (true, false) => 'x',
+        (false, false) => '-',
+    });
+    output.push(if mode & 0o040 != 0 { 'r' } else { '-' });
+    output.push(if mode & 0o020 != 0 { 'w' } else { '-' });
+    output.push(match (mode & 0o010 != 0, mode & 0o2000 != 0) {
+        (true, true) => 's',
+        (false, true) => 'S',
+        (true, false) => 'x',
+        (false, false) => '-',
+    });
+    output.push(if mode & 0o004 != 0 { 'r' } else { '-' });
+    output.push(if mode & 0o002 != 0 { 'w' } else { '-' });
+    output.push(match (mode & 0o001 != 0, mode & 0o1000 != 0) {
+        (true, true) => 't',
+        (false, true) => 'T',
+        (true, false) => 'x',
+        (false, false) => '-',
+    });
+    output
+}
+
+#[cfg(not(unix))]
+fn permissions_string(metadata: &std::fs::Metadata) -> String {
+    if metadata.permissions().readonly() {
+        "r--r--r--".to_string()
+    } else {
+        "rw-rw-rw-".to_string()
+    }
+}
+
+#[cfg(unix)]
+fn owner_string(metadata: &std::fs::Metadata) -> String {
+    format!("{}:{}", metadata.uid(), metadata.gid())
+}
+
+#[cfg(not(unix))]
+fn owner_string(_: &std::fs::Metadata) -> String {
+    "-".to_string()
 }

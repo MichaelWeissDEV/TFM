@@ -8,7 +8,7 @@ use tokio::fs;
 #[derive(Debug)]
 pub struct MarkerStore {
     path: PathBuf,
-    markers: HashMap<char, PathBuf>,
+    markers: HashMap<String, PathBuf>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -26,12 +26,31 @@ impl MarkerStore {
         Self { path, markers }
     }
 
-    pub fn get(&self, key: char) -> Option<&PathBuf> {
-        self.markers.get(&key)
+    pub fn get(&self, key: &str) -> Option<&PathBuf> {
+        self.markers.get(key)
     }
 
-    pub fn set(&mut self, key: char, path: PathBuf) {
-        self.markers.insert(key, path);
+    pub fn set(&mut self, key: impl Into<String>, path: PathBuf) {
+        self.markers.insert(key.into(), path);
+    }
+
+    pub fn remove(&mut self, key: &str) -> bool {
+        self.markers.remove(key).is_some()
+    }
+
+    pub fn rename(&mut self, old: &str, new: String) -> bool {
+        if old == new {
+            return false;
+        }
+        let Some(path) = self.markers.remove(old) else {
+            return false;
+        };
+        self.markers.insert(new, path);
+        true
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = (&String, &PathBuf)> {
+        self.markers.iter()
     }
 
     pub fn save_task(&self) -> impl Future<Output = io::Result<()>> + Send + 'static {
@@ -41,17 +60,15 @@ impl MarkerStore {
     }
 }
 
-fn parse_markers(content: &str) -> HashMap<char, PathBuf> {
+fn parse_markers(content: &str) -> HashMap<String, PathBuf> {
     let file: MarkerFile = toml::from_str(content).unwrap_or_default();
     let mut markers = HashMap::new();
     for (key, value) in file.markers {
-        let mut chars = key.chars();
-        let Some(marker) = chars.next() else {
+        let name = key.trim();
+        if name.is_empty() {
             continue;
-        };
-        if chars.next().is_none() {
-            markers.insert(marker, PathBuf::from(value));
         }
+        markers.insert(name.to_string(), PathBuf::from(value));
     }
     markers
 }
@@ -66,13 +83,13 @@ fn default_marker_path() -> PathBuf {
     PathBuf::from("markers.toml")
 }
 
-async fn save_markers(path: PathBuf, markers: HashMap<char, PathBuf>) -> io::Result<()> {
+async fn save_markers(path: PathBuf, markers: HashMap<String, PathBuf>) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
     let markers = markers
         .iter()
-        .map(|(key, value)| (key.to_string(), value.to_string_lossy().to_string()))
+        .map(|(key, value)| (key.clone(), value.to_string_lossy().to_string()))
         .collect();
     let content = toml::to_string(&MarkerFile { markers })
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
