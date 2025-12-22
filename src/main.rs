@@ -41,6 +41,7 @@ enum DirTarget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum InputAction {
     Search,
+    MarkerSearch,
     AddFile,
     AddDir,
     Rename,
@@ -67,6 +68,7 @@ impl InputState {
     fn title(&self) -> &'static str {
         match self.action.clone() {
             InputAction::Search => "Search",
+            InputAction::MarkerSearch => "Search Markers",
             InputAction::AddFile => "Add File",
             InputAction::AddDir => "Add Dir",
             InputAction::Rename => "Rename",
@@ -118,7 +120,9 @@ struct MarkerListEntry {
 #[derive(Debug)]
 struct MarkerListState {
     entries: Vec<MarkerListEntry>,
+    filtered_indices: Vec<usize>,
     selected: usize,
+    filter: String,
 }
 
 impl MarkerListState {
@@ -131,14 +135,18 @@ impl MarkerListState {
             })
             .collect();
         entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        let filtered_indices = (0..entries.len()).collect();
         Self {
             entries,
+            filtered_indices,
             selected: 0,
+            filter: String::new(),
         }
     }
 
     fn selected_entry(&self) -> Option<&MarkerListEntry> {
-        self.entries.get(self.selected)
+        let index = *self.filtered_indices.get(self.selected)?;
+        self.entries.get(index)
     }
 
     fn sync(&mut self, markers: &MarkerStore, preferred: Option<&str>) {
@@ -154,15 +162,50 @@ impl MarkerListState {
             })
             .collect();
         entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        self.entries = entries;
+        self.apply_filter(current.as_deref());
+    }
+
+    fn update_filter(&mut self, value: String) {
+        let preferred = self.selected_entry().map(|entry| entry.name.clone());
+        self.filter = value;
+        self.apply_filter(preferred.as_deref());
+    }
+
+    fn clear_filter(&mut self) {
+        let preferred = self.selected_entry().map(|entry| entry.name.clone());
+        self.filter.clear();
+        self.apply_filter(preferred.as_deref());
+    }
+
+    fn apply_filter(&mut self, preferred: Option<&str>) {
+        let query = self.filter.to_ascii_lowercase();
+        self.filtered_indices = if query.is_empty() {
+            (0..self.entries.len()).collect()
+        } else {
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    let name = entry.name.to_ascii_lowercase();
+                    let path = entry.path.to_string_lossy().to_ascii_lowercase();
+                    name.contains(&query) || path.contains(&query)
+                })
+                .map(|(index, _)| index)
+                .collect()
+        };
         let mut selected = 0usize;
-        if let Some(name) = current {
-            if let Some(pos) = entries.iter().position(|entry| entry.name == name) {
+        if let Some(name) = preferred {
+            if let Some(pos) = self
+                .filtered_indices
+                .iter()
+                .position(|&index| self.entries[index].name == name)
+            {
                 selected = pos;
             }
         }
-        self.entries = entries;
-        if !self.entries.is_empty() {
-            self.selected = selected.min(self.entries.len() - 1);
+        if !self.filtered_indices.is_empty() {
+            self.selected = selected.min(self.filtered_indices.len() - 1);
         } else {
             self.selected = 0;
         }
@@ -208,6 +251,7 @@ struct App {
     filtered_indices: Vec<usize>,
     selected: usize,
     filter: String,
+    show_hidden: bool,
     mode: Mode,
     pending_prefix: Option<PendingPrefix>,
     marker_list: Option<MarkerListState>,
@@ -255,6 +299,7 @@ impl App {
             filtered_indices: Vec::new(),
             selected: 0,
             filter: String::new(),
+            show_hidden: true,
             mode: Mode::Normal,
             pending_prefix: None,
             marker_list: None,
@@ -280,8 +325,9 @@ impl App {
         let image_state = self.image_state.as_mut();
         let marker_popup = self.marker_list.as_ref().map(|list| ui::MarkerPopup {
             items: list
-                .entries
+                .filtered_indices
                 .iter()
+                .filter_map(|&index| list.entries.get(index))
                 .map(|entry| ui::MarkerListItem {
                     name: entry.name.clone(),
                     path: entry.path.to_string_lossy().to_string(),
@@ -504,6 +550,18 @@ impl App {
         self.apply_filter(selected_path)
     }
 
+    fn update_marker_filter(&mut self, value: String) {
+        if let Some(list) = self.marker_list.as_mut() {
+            list.update_filter(value);
+        }
+    }
+
+    fn clear_marker_filter(&mut self) {
+        if let Some(list) = self.marker_list.as_mut() {
+            list.clear_filter();
+        }
+    }
+
     fn open_marker_list(&mut self) {
         self.marker_list = Some(MarkerListState::new(&self.markers));
         self.mode = Mode::MarkerList;
@@ -514,6 +572,10 @@ impl App {
             list.sync(&self.markers, preferred);
         }
     }
+}
+
+fn is_hidden_name(name: &str) -> bool {
+    name.starts_with('.')
 }
 
 struct InputHandler;
@@ -589,6 +651,13 @@ impl InputHandler {
                 }
                 KeyCode::Char('m') => {
                     app.show_metadata = !app.show_metadata;
+                    effect.redraw = true;
+                    return effect;
+                }
+                KeyCode::Char('h') | KeyCode::Char('H') => {
+                    app.show_hidden = !app.show_hidden;
+                    app.pending_selection = app.selected_entry().map(|entry| entry.path.clone());
+                    app.refresh_dirs(tx);
                     effect.redraw = true;
                     return effect;
                 }
@@ -761,6 +830,28 @@ impl InputHandler {
                         app.clear_preview();
                         effect.request_preview = true;
                     }
+                }
+                _ => {}
+            },
+            InputAction::MarkerSearch => match key.code {
+                KeyCode::Esc => {
+                    app.clear_marker_filter();
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Enter => {
+                    keep_input = false;
+                    effect.redraw = true;
+                }
+                KeyCode::Backspace => {
+                    input.buffer.pop();
+                    app.update_marker_filter(input.buffer.clone());
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    input.buffer.push(ch);
+                    app.update_marker_filter(input.buffer.clone());
+                    effect.redraw = true;
                 }
                 _ => {}
             },
@@ -1051,7 +1142,7 @@ impl InputHandler {
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if list.selected + 1 < list.entries.len() {
+                    if list.selected + 1 < list.filtered_indices.len() {
                         list.selected += 1;
                         effect.redraw = true;
                     }
@@ -1089,6 +1180,10 @@ impl InputHandler {
                     action = Some(MarkerListAction::StartInput(InputAction::MarkerCreateName));
                     effect.redraw = true;
                 }
+                KeyCode::Char('/') => {
+                    action = Some(MarkerListAction::StartInput(InputAction::MarkerSearch));
+                    effect.redraw = true;
+                }
                 _ => {}
             }
         }
@@ -1124,6 +1219,11 @@ impl InputHandler {
     fn start_input(app: &mut App, action: InputAction) {
         let buffer = match &action {
             InputAction::Search => app.filter.clone(),
+            InputAction::MarkerSearch => app
+                .marker_list
+                .as_ref()
+                .map(|list| list.filter.clone())
+                .unwrap_or_default(),
             InputAction::Rename => app
                 .selected_entry()
                 .map(|entry| entry.name.clone())
@@ -1382,6 +1482,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     DirTarget::Parent => &mut app.parent_entries,
                     DirTarget::Current => &mut app.current_entries,
                 };
+                let mut entries = entries;
+                if !app.show_hidden {
+                    entries.retain(|entry| !is_hidden_name(&entry.name));
+                }
                 list.extend(entries);
                 if done {
                     core::sort_entries(list);
