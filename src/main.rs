@@ -153,6 +153,242 @@ struct ProgramListState {
     filter: String,
 }
 
+#[derive(Clone)]
+struct KeyBinding {
+    code: KeyCode,
+    modifiers: KeyModifiers,
+}
+
+#[derive(Clone)]
+struct KeyMap {
+    normal: NormalKeyMap,
+    add: AddKeyMap,
+    settings: SettingsKeyMap,
+    view: ViewKeyMap,
+    copy: CopyKeyMap,
+    delete: DeleteKeyMap,
+    marker_list: MarkerListKeyMap,
+    open_with: OpenWithKeyMap,
+}
+
+#[derive(Clone)]
+struct NormalKeyMap {
+    quit: Vec<KeyBinding>,
+    up: Vec<KeyBinding>,
+    down: Vec<KeyBinding>,
+    parent: Vec<KeyBinding>,
+    open: Vec<KeyBinding>,
+    search: Vec<KeyBinding>,
+    add: Vec<KeyBinding>,
+    rename: Vec<KeyBinding>,
+    delete: Vec<KeyBinding>,
+    marker_set: Vec<KeyBinding>,
+    marker_list: Vec<KeyBinding>,
+    marker_jump: Vec<KeyBinding>,
+    settings: Vec<KeyBinding>,
+    view: Vec<KeyBinding>,
+    copy: Vec<KeyBinding>,
+    cut: Vec<KeyBinding>,
+    paste: Vec<KeyBinding>,
+    open_shell: Vec<KeyBinding>,
+    open_with_picker: Vec<KeyBinding>,
+    open_with_quick: Vec<KeyBinding>,
+}
+
+#[derive(Clone)]
+struct AddKeyMap {
+    dir: Vec<KeyBinding>,
+}
+
+#[derive(Clone)]
+struct SettingsKeyMap {
+    toggle_permissions: Vec<KeyBinding>,
+    toggle_dates: Vec<KeyBinding>,
+    toggle_owner: Vec<KeyBinding>,
+    toggle_metadata: Vec<KeyBinding>,
+    toggle_hidden: Vec<KeyBinding>,
+}
+
+#[derive(Clone)]
+struct ViewKeyMap {
+    toggle_list_permissions: Vec<KeyBinding>,
+    toggle_list_owner: Vec<KeyBinding>,
+}
+
+#[derive(Clone)]
+struct CopyKeyMap {
+    copy_path: Vec<KeyBinding>,
+}
+
+#[derive(Clone)]
+struct DeleteKeyMap {
+    confirm: Vec<KeyBinding>,
+}
+
+#[derive(Clone)]
+struct MarkerListKeyMap {
+    close: Vec<KeyBinding>,
+    up: Vec<KeyBinding>,
+    down: Vec<KeyBinding>,
+    open: Vec<KeyBinding>,
+    rename: Vec<KeyBinding>,
+    edit_path: Vec<KeyBinding>,
+    delete: Vec<KeyBinding>,
+    add: Vec<KeyBinding>,
+    search: Vec<KeyBinding>,
+}
+
+#[derive(Clone)]
+struct OpenWithKeyMap {
+    close: Vec<KeyBinding>,
+    up: Vec<KeyBinding>,
+    down: Vec<KeyBinding>,
+    open: Vec<KeyBinding>,
+    backspace: Vec<KeyBinding>,
+}
+
+impl KeyBinding {
+    fn matches(&self, key: KeyEvent) -> bool {
+        if key.code != self.code {
+            return false;
+        }
+        if key.modifiers == self.modifiers {
+            return true;
+        }
+        if self.modifiers.is_empty() {
+            if let KeyCode::Char(ch) = self.code {
+                return ch.is_uppercase() && key.modifiers == KeyModifiers::SHIFT;
+            }
+        }
+        false
+    }
+}
+
+impl KeyMap {
+    fn from_config(config: &Config) -> Self {
+        let keys = &config.keys;
+        Self {
+            normal: NormalKeyMap {
+                quit: parse_key_list(&keys.normal.quit),
+                up: parse_key_list(&keys.normal.up),
+                down: parse_key_list(&keys.normal.down),
+                parent: parse_key_list(&keys.normal.parent),
+                open: parse_key_list(&keys.normal.open),
+                search: parse_key_list(&keys.normal.search),
+                add: parse_key_list(&keys.normal.add),
+                rename: parse_key_list(&keys.normal.rename),
+                delete: parse_key_list(&keys.normal.delete),
+                marker_set: parse_key_list(&keys.normal.marker_set),
+                marker_list: parse_key_list(&keys.normal.marker_list),
+                marker_jump: parse_key_list(&keys.normal.marker_jump),
+                settings: parse_key_list(&keys.normal.settings),
+                view: parse_key_list(&keys.normal.view),
+                copy: parse_key_list(&keys.normal.copy),
+                cut: parse_key_list(&keys.normal.cut),
+                paste: parse_key_list(&keys.normal.paste),
+                open_shell: parse_key_list(&keys.normal.open_shell),
+                open_with_picker: parse_key_list(&keys.normal.open_with_picker),
+                open_with_quick: parse_key_list(&keys.normal.open_with_quick),
+            },
+            add: AddKeyMap {
+                dir: parse_key_list(&keys.add.dir),
+            },
+            settings: SettingsKeyMap {
+                toggle_permissions: parse_key_list(&keys.settings.toggle_permissions),
+                toggle_dates: parse_key_list(&keys.settings.toggle_dates),
+                toggle_owner: parse_key_list(&keys.settings.toggle_owner),
+                toggle_metadata: parse_key_list(&keys.settings.toggle_metadata),
+                toggle_hidden: parse_key_list(&keys.settings.toggle_hidden),
+            },
+            view: ViewKeyMap {
+                toggle_list_permissions: parse_key_list(&keys.view.toggle_list_permissions),
+                toggle_list_owner: parse_key_list(&keys.view.toggle_list_owner),
+            },
+            copy: CopyKeyMap {
+                copy_path: parse_key_list(&keys.copy.copy_path),
+            },
+            delete: DeleteKeyMap {
+                confirm: parse_key_list(&keys.delete.confirm),
+            },
+            marker_list: MarkerListKeyMap {
+                close: parse_key_list(&keys.marker_list.close),
+                up: parse_key_list(&keys.marker_list.up),
+                down: parse_key_list(&keys.marker_list.down),
+                open: parse_key_list(&keys.marker_list.open),
+                rename: parse_key_list(&keys.marker_list.rename),
+                edit_path: parse_key_list(&keys.marker_list.edit_path),
+                delete: parse_key_list(&keys.marker_list.delete),
+                add: parse_key_list(&keys.marker_list.add),
+                search: parse_key_list(&keys.marker_list.search),
+            },
+            open_with: OpenWithKeyMap {
+                close: parse_key_list(&keys.open_with.close),
+                up: parse_key_list(&keys.open_with.up),
+                down: parse_key_list(&keys.open_with.down),
+                open: parse_key_list(&keys.open_with.open),
+                backspace: parse_key_list(&keys.open_with.backspace),
+            },
+        }
+    }
+}
+
+fn parse_key_list(list: &[String]) -> Vec<KeyBinding> {
+    list.iter().filter_map(|item| parse_key_binding(item)).collect()
+}
+
+fn parse_key_binding(value: &str) -> Option<KeyBinding> {
+    let mut modifiers = KeyModifiers::empty();
+    let mut key_part: Option<&str> = None;
+    for part in value.split('+') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
+            "alt" | "meta" => modifiers |= KeyModifiers::ALT,
+            "shift" => modifiers |= KeyModifiers::SHIFT,
+            _ => {
+                if key_part.is_some() {
+                    return None;
+                }
+                key_part = Some(part);
+            }
+        }
+    }
+    let key_part = key_part?;
+    let lower = key_part.to_ascii_lowercase();
+    let code = match lower.as_str() {
+        "enter" => KeyCode::Enter,
+        "esc" | "escape" => KeyCode::Esc,
+        "backspace" => KeyCode::Backspace,
+        "tab" => KeyCode::Tab,
+        "delete" | "del" => KeyCode::Delete,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
+        "space" => KeyCode::Char(' '),
+        _ => {
+            let mut chars = key_part.chars();
+            let ch = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            KeyCode::Char(ch)
+        }
+    };
+    Some(KeyBinding { code, modifiers })
+}
+
+fn matches_any(key: KeyEvent, bindings: &[KeyBinding]) -> bool {
+    bindings.iter().any(|binding| binding.matches(key))
+}
+
 fn parse_marker_filter(query: &str) -> (MarkerFilterMode, String) {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -373,6 +609,7 @@ struct InputEffect {
 
 struct App {
     config: Config,
+    keymap: KeyMap,
     picker: Picker,
     current_dir: PathBuf,
     parent_entries: Vec<FileEntry>,
@@ -418,6 +655,7 @@ impl App {
             Ok(programs) => programs,
             Err(_) => Vec::new(),
         };
+        let keymap = KeyMap::from_config(&config);
         let mut app = Self {
             show_metadata: config.metadata_bar.enabled,
             show_permissions: config.metadata_bar.show_permissions,
@@ -426,6 +664,7 @@ impl App {
             show_list_permissions: false,
             show_list_owner: false,
             config,
+            keymap,
             picker,
             current_dir,
             parent_entries: Vec::new(),
@@ -858,7 +1097,7 @@ impl InputHandler {
         }
         match prefix {
             PendingPrefix::Add => {
-                if matches!(key.code, KeyCode::Char('d')) {
+                if matches_any(key, &app.keymap.add.dir) {
                     Self::start_input(app, InputAction::AddDir);
                     effect.redraw = true;
                     return effect;
@@ -873,42 +1112,42 @@ impl InputHandler {
                     suspend: input_effect.suspend,
                 };
             }
-            PendingPrefix::Settings => match key.code {
-                KeyCode::Char('r') => {
+            PendingPrefix::Settings => {
+                let keys = &app.keymap.settings;
+                if matches_any(key, &keys.toggle_permissions) {
                     app.show_permissions = !app.show_permissions;
                     app.show_metadata = true;
                     effect.redraw = true;
                     return effect;
                 }
-                KeyCode::Char('d') => {
+                if matches_any(key, &keys.toggle_dates) {
                     app.show_dates = !app.show_dates;
                     app.show_metadata = true;
                     effect.redraw = true;
                     return effect;
                 }
-                KeyCode::Char('o') => {
+                if matches_any(key, &keys.toggle_owner) {
                     app.show_owner = !app.show_owner;
                     app.show_metadata = true;
                     effect.redraw = true;
                     return effect;
                 }
-                KeyCode::Char('m') => {
+                if matches_any(key, &keys.toggle_metadata) {
                     app.show_metadata = !app.show_metadata;
                     effect.redraw = true;
                     return effect;
                 }
-                KeyCode::Char('h') | KeyCode::Char('H') => {
+                if matches_any(key, &keys.toggle_hidden) {
                     app.show_hidden = !app.show_hidden;
                     app.pending_selection = app.selected_entry().map(|entry| entry.path.clone());
                     app.refresh_dirs(tx);
                     effect.redraw = true;
                     return effect;
                 }
-                KeyCode::Esc => return effect,
-                _ => return Self::handle_normal_key(app, key, tx),
-            },
+                return Self::handle_normal_key(app, key, tx);
+            }
             PendingPrefix::Copy => {
-                if matches!(key.code, KeyCode::Char('p')) {
+                if matches_any(key, &app.keymap.copy.copy_path) {
                     if let Some(entry) = app.selected_entry() {
                         spawn_copy_path(entry.path.clone());
                     }
@@ -916,21 +1155,22 @@ impl InputHandler {
                 }
                 return Self::handle_normal_key(app, key, tx);
             }
-            PendingPrefix::View => match key.code {
-                KeyCode::Char('p') => {
+            PendingPrefix::View => {
+                let keys = &app.keymap.view;
+                if matches_any(key, &keys.toggle_list_permissions) {
                     app.show_list_permissions = !app.show_list_permissions;
                     effect.redraw = true;
                     return effect;
                 }
-                KeyCode::Char('o') => {
+                if matches_any(key, &keys.toggle_list_owner) {
                     app.show_list_owner = !app.show_list_owner;
                     effect.redraw = true;
                     return effect;
                 }
-                _ => return Self::handle_normal_key(app, key, tx),
-            },
+                return Self::handle_normal_key(app, key, tx);
+            }
             PendingPrefix::Delete => {
-                if matches!(key.code, KeyCode::Char('d')) {
+                if matches_any(key, &app.keymap.delete.confirm) {
                     if app.selected_entry().is_some() {
                         Self::start_input(app, InputAction::ConfirmDelete);
                         effect.redraw = true;
@@ -957,91 +1197,66 @@ impl InputHandler {
         tx: &tokio_mpsc::UnboundedSender<AppEvent>,
     ) -> InputEffect {
         let mut effect = InputEffect::default();
-        if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        let keys = &app.keymap.normal;
+        if matches_any(key, &keys.open_with_picker) {
             app.open_program_list();
             effect.redraw = true;
-            return effect;
-        }
-        if key.code == KeyCode::Char('O') {
-            app.open_program_list();
+        } else if matches_any(key, &keys.quit) {
+            effect.exit = true;
+        } else if matches_any(key, &keys.up) {
+            if app.select_up() {
+                effect.redraw = true;
+                effect.request_preview = true;
+            }
+        } else if matches_any(key, &keys.down) {
+            if app.select_down() {
+                effect.redraw = true;
+                effect.request_preview = true;
+            }
+        } else if matches_any(key, &keys.parent) {
+            if app.navigate_parent(tx) {
+                effect.redraw = true;
+            }
+        } else if matches_any(key, &keys.open) {
+            if app.activate_selected(tx) {
+                effect.redraw = true;
+            }
+        } else if matches_any(key, &keys.search) {
+            Self::start_input(app, InputAction::Search);
             effect.redraw = true;
-            return effect;
-        }
-        match key.code {
-            KeyCode::Char('q') => effect.exit = true,
-            KeyCode::Up | KeyCode::Char('k') => {
-                if app.select_up() {
-                    effect.redraw = true;
-                    effect.request_preview = true;
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if app.select_down() {
-                    effect.redraw = true;
-                    effect.request_preview = true;
-                }
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                if app.navigate_parent(tx) {
-                    effect.redraw = true;
-                }
-            }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
-                if app.activate_selected(tx) {
-                    effect.redraw = true;
-                }
-            }
-            KeyCode::Char('/') => {
-                Self::start_input(app, InputAction::Search);
+        } else if matches_any(key, &keys.add) {
+            app.pending_prefix = Some(PendingPrefix::Add);
+        } else if matches_any(key, &keys.rename) {
+            if app.selected_entry().is_some() {
+                Self::start_input(app, InputAction::Rename);
                 effect.redraw = true;
             }
-            KeyCode::Char('a') => {
-                app.pending_prefix = Some(PendingPrefix::Add);
-            }
-            KeyCode::Char('r') => {
-                if app.selected_entry().is_some() {
-                    Self::start_input(app, InputAction::Rename);
-                    effect.redraw = true;
-                }
-            }
-            KeyCode::Char('d') => {
-                app.pending_prefix = Some(PendingPrefix::Delete);
-            }
-            KeyCode::Char('m') => {
-                Self::start_input(app, InputAction::MarkerSet);
-                effect.redraw = true;
-            }
-            KeyCode::Char('M') => {
-                app.open_marker_list();
-                effect.redraw = true;
-            }
-            KeyCode::Char('g') => {
-                Self::start_input(app, InputAction::MarkerJump);
-                effect.redraw = true;
-            }
-            KeyCode::Char('s') => {
-                app.pending_prefix = Some(PendingPrefix::Settings);
-            }
-            KeyCode::Char('v') => {
-                app.pending_prefix = Some(PendingPrefix::View);
-            }
-            KeyCode::Char('c') => {
-                Self::copy_selection(app, ClipboardOp::Copy);
-                app.pending_prefix = Some(PendingPrefix::Copy);
-            }
-            KeyCode::Char('x') => {
-                Self::copy_selection(app, ClipboardOp::Cut);
-            }
-            KeyCode::Char('p') => {
-                Self::paste_selection(app, tx);
-            }
-            KeyCode::Char('o') => {
-                app.pending_prefix = Some(PendingPrefix::OpenWith);
-            }
-            KeyCode::Char('t') => {
-                effect.suspend = Some(SuspendAction::Shell(app.current_dir.clone()));
-            }
-            _ => {}
+        } else if matches_any(key, &keys.delete) {
+            app.pending_prefix = Some(PendingPrefix::Delete);
+        } else if matches_any(key, &keys.marker_set) {
+            Self::start_input(app, InputAction::MarkerSet);
+            effect.redraw = true;
+        } else if matches_any(key, &keys.marker_list) {
+            app.open_marker_list();
+            effect.redraw = true;
+        } else if matches_any(key, &keys.marker_jump) {
+            Self::start_input(app, InputAction::MarkerJump);
+            effect.redraw = true;
+        } else if matches_any(key, &keys.settings) {
+            app.pending_prefix = Some(PendingPrefix::Settings);
+        } else if matches_any(key, &keys.view) {
+            app.pending_prefix = Some(PendingPrefix::View);
+        } else if matches_any(key, &keys.copy) {
+            Self::copy_selection(app, ClipboardOp::Copy);
+            app.pending_prefix = Some(PendingPrefix::Copy);
+        } else if matches_any(key, &keys.cut) {
+            Self::copy_selection(app, ClipboardOp::Cut);
+        } else if matches_any(key, &keys.paste) {
+            Self::paste_selection(app, tx);
+        } else if matches_any(key, &keys.open_with_quick) {
+            app.pending_prefix = Some(PendingPrefix::OpenWith);
+        } else if matches_any(key, &keys.open_shell) {
+            effect.suspend = Some(SuspendAction::Shell(app.current_dir.clone()));
         }
         effect
     }
@@ -1396,61 +1611,51 @@ impl InputHandler {
                 app.mode = Mode::Normal;
                 return effect;
             };
-            match key.code {
-                KeyCode::Esc => {
-                    close = true;
+            let keys = &app.keymap.marker_list;
+            if matches_any(key, &keys.close) {
+                close = true;
+                effect.redraw = true;
+            } else if matches_any(key, &keys.up) {
+                if list.selected > 0 {
+                    list.selected -= 1;
                     effect.redraw = true;
                 }
-                KeyCode::Up => {
-                    if list.selected > 0 {
-                        list.selected -= 1;
-                        effect.redraw = true;
-                    }
-                }
-                KeyCode::Down => {
-                    if list.selected + 1 < list.filtered_indices.len() {
-                        list.selected += 1;
-                        effect.redraw = true;
-                    }
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = list.selected_entry() {
-                        action = Some(MarkerListAction::Jump(entry.path.clone()));
-                    }
-                    close = true;
+            } else if matches_any(key, &keys.down) {
+                if list.selected + 1 < list.filtered_indices.len() {
+                    list.selected += 1;
                     effect.redraw = true;
                 }
-                KeyCode::Char('r') => {
-                    if let Some(entry) = list.selected_entry() {
-                        action = Some(MarkerListAction::StartInput(InputAction::MarkerRename {
-                            name: entry.name.clone(),
-                        }));
-                        effect.redraw = true;
-                    }
+            } else if matches_any(key, &keys.open) {
+                if let Some(entry) = list.selected_entry() {
+                    action = Some(MarkerListAction::Jump(entry.path.clone()));
                 }
-                KeyCode::Char('e') => {
-                    if let Some(entry) = list.selected_entry() {
-                        action = Some(MarkerListAction::StartInput(InputAction::MarkerEditPath {
-                            name: entry.name.clone(),
-                        }));
-                        effect.redraw = true;
-                    }
-                }
-                KeyCode::Char('d') => {
-                    if let Some(entry) = list.selected_entry() {
-                        action = Some(MarkerListAction::Delete(entry.name.clone()));
-                        effect.redraw = true;
-                    }
-                }
-                KeyCode::Char('a') => {
-                    action = Some(MarkerListAction::StartInput(InputAction::MarkerCreateName));
+                close = true;
+                effect.redraw = true;
+            } else if matches_any(key, &keys.rename) {
+                if let Some(entry) = list.selected_entry() {
+                    action = Some(MarkerListAction::StartInput(InputAction::MarkerRename {
+                        name: entry.name.clone(),
+                    }));
                     effect.redraw = true;
                 }
-                KeyCode::Char('/') => {
-                    action = Some(MarkerListAction::StartInput(InputAction::MarkerSearch));
+            } else if matches_any(key, &keys.edit_path) {
+                if let Some(entry) = list.selected_entry() {
+                    action = Some(MarkerListAction::StartInput(InputAction::MarkerEditPath {
+                        name: entry.name.clone(),
+                    }));
                     effect.redraw = true;
                 }
-                _ => {}
+            } else if matches_any(key, &keys.delete) {
+                if let Some(entry) = list.selected_entry() {
+                    action = Some(MarkerListAction::Delete(entry.name.clone()));
+                    effect.redraw = true;
+                }
+            } else if matches_any(key, &keys.add) {
+                action = Some(MarkerListAction::StartInput(InputAction::MarkerCreateName));
+                effect.redraw = true;
+            } else if matches_any(key, &keys.search) {
+                action = Some(MarkerListAction::StartInput(InputAction::MarkerSearch));
+                effect.redraw = true;
             }
         }
 
@@ -1497,49 +1702,44 @@ impl InputHandler {
                 app.mode = Mode::Normal;
                 return effect;
             };
-            match key.code {
-                KeyCode::Esc => {
+            let keys = &app.keymap.open_with;
+            if matches_any(key, &keys.close) {
+                close = true;
+                effect.redraw = true;
+            } else if matches_any(key, &keys.up) {
+                if list.selected > 0 {
+                    list.selected -= 1;
+                    effect.redraw = true;
+                }
+            } else if matches_any(key, &keys.down) {
+                if list.selected + 1 < list.filtered_indices.len() {
+                    list.selected += 1;
+                    effect.redraw = true;
+                }
+            } else if matches_any(key, &keys.open) {
+                if let (Some(program), Some(target)) =
+                    (list.selected_entry(), target_path.as_ref())
+                {
+                    action = Some(SuspendAction::OpenWith {
+                        program: program.path.clone(),
+                        path: target.clone(),
+                        cwd: cwd.clone(),
+                    });
                     close = true;
                     effect.redraw = true;
                 }
-                KeyCode::Up => {
-                    if list.selected > 0 {
-                        list.selected -= 1;
-                        effect.redraw = true;
-                    }
-                }
-                KeyCode::Down => {
-                    if list.selected + 1 < list.filtered_indices.len() {
-                        list.selected += 1;
-                        effect.redraw = true;
-                    }
-                }
-                KeyCode::Enter => {
-                    if let (Some(program), Some(target)) =
-                        (list.selected_entry(), target_path.as_ref())
-                    {
-                        action = Some(SuspendAction::OpenWith {
-                            program: program.path.clone(),
-                            path: target.clone(),
-                            cwd: cwd.clone(),
-                        });
-                        close = true;
-                        effect.redraw = true;
-                    }
-                }
-                KeyCode::Backspace => {
-                    let mut next = list.filter.clone();
-                    next.pop();
-                    list.update_filter(next);
-                    effect.redraw = true;
-                }
-                KeyCode::Char(ch) if !ch.is_control() => {
+            } else if matches_any(key, &keys.backspace) {
+                let mut next = list.filter.clone();
+                next.pop();
+                list.update_filter(next);
+                effect.redraw = true;
+            } else if let KeyCode::Char(ch) = key.code {
+                if !ch.is_control() {
                     let mut next = list.filter.clone();
                     next.push(ch);
                     list.update_filter(next);
                     effect.redraw = true;
                 }
-                _ => {}
             }
         }
 

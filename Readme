@@ -1,1 +1,108 @@
-# Terminal File Manager
+# TFM (Terminal File Manager)
+
+## Features
+- Dual-pane navigation with preview.
+- Regex file search (case-insensitive).
+- Marker system with search (name/path).
+- Open With picker and quick open slots.
+- Shell suspend/return (`t` opens a subshell).
+
+## Functions
+- Navigate directories and open files with the system default handler.
+- Create files/dirs, rename, delete.
+- Cut/copy/paste; copy path to clipboard.
+- Toggle hidden files and metadata/list columns.
+- Preview text/images/binary metadata.
+
+## Config
+- Default path: `~/.config/tfm/config.toml` (fallbacks: `~/.tfm.toml`, YAML variants).
+- Env override: `TFM_CONFIG=/path/to/config.toml`.
+- If no config exists, TFM writes a default one and uses built-in defaults.
+- Example config (all defaults): `src/example_config.toml`.
+
+## Theme Colors
+Theme colors are strings (named colors or `#RRGGBB`):
+- `background`, `foreground`: base UI text/background.
+- `accent`: borders/titles.
+- `folder`: folder entries.
+- `selection_bg`, `selection_fg`: selection highlight.
+- `warning`, `error`: warnings/errors (warning is used in preview mismatches).
+
+## Keybinding Format
+Each binding is a list of strings:
+- Single characters: `"q"`, `"/"`, `"M"`.
+- Special keys: `"enter"`, `"esc"`, `"backspace"`, `"up"`, `"down"`, `"left"`, `"right"`.
+- Modifiers: `"ctrl+o"` (use uppercase letters for shifted chars, e.g. `"O"`).
+
+## Keybindings (Default)
+Normal mode:
+- `q`: quit
+- `up/k`: move up
+- `down/j`: move down
+- `left/h`: parent dir
+- `right/l/enter`: open entry
+- `/`: search (regex)
+- `a`: add prefix
+- `r`: rename
+- `d`: delete prefix
+- `m`: set marker
+- `M`: marker list
+- `g`: jump marker
+- `s`: settings prefix
+- `v`: view prefix
+- `c`: copy (prefix for copy-path)
+- `x`: cut
+- `p`: paste
+- `t`: open shell (exit returns to TFM)
+- `o`: open-with quick prefix
+- `ctrl+o` or `O`: open-with picker
+
+Add prefix (`a` then):
+- `d`: add dir
+- any other key: add file (starts input with that key)
+
+Settings prefix (`s` then):
+- `r`: toggle permissions (metadata bar)
+- `d`: toggle dates (metadata bar)
+- `o`: toggle owner (metadata bar)
+- `m`: toggle metadata bar
+- `h`/`H`: toggle hidden files
+
+View prefix (`v` then):
+- `p`: toggle list permissions columns
+- `o`: toggle list owner columns
+
+Copy prefix (`c` then):
+- `p`: copy selected path to clipboard
+
+Delete prefix (`d` then):
+- `d`: confirm delete (then `y/n`)
+
+Marker list (`M`):
+- `up/k`, `down/j`: move
+- `enter`: jump
+- `r`: rename
+- `e`: edit path
+- `d`: delete
+- `a`: add marker
+- `/`: search markers (`n:`/`p:` prefixes)
+- `esc`: close
+
+Open With picker (`ctrl+o` or `O`):
+- type to filter, `backspace` to delete
+- `up/down`: move
+- `enter`: open
+- `esc`: close
+
+## Open With Quick Slots
+Configure quick opens in TOML:
+```
+[open_with]
+quick = { 1 = "nvim", 2 = "vim", 3 = "nano" }
+```
+Use `o1`, `o2`, `o3` in normal mode. Programs must be in `PATH` or use full paths.
+
+## Marker Search Filters
+In marker search (`/` inside marker list), you can scope:
+- `n:` or `n/` for name only
+- `p:` or `p/` for path only

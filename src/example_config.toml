@@ -1,0 +1,98 @@
+check_mismatch = false
+
+[theme]
+background = "black"
+foreground = "white"
+selection_bg = "blue"
+selection_fg = "black"
+accent = "cyan"
+folder = "lightblue"
+warning = "yellow"
+error = "red"
+
+[icons]
+folder = "󰉋"
+file = "󰈔"
+text = "󰈙"
+image = "󰈟"
+video = "󰕧"
+audio = "󰎆"
+archive = "󰀼"
+symlink = "󰌷"
+unknown = "󰈚"
+
+[metadata_bar]
+enabled = false
+show_permissions = true
+show_dates = true
+show_owner = true
+
+[metadata_bar.icons]
+permissions = "󰌾"
+owner = "󰉍"
+created = "󰃰"
+modified = "󰃯"
+accessed = "󰃱"
+
+[open_with]
+quick = {}
+
+[keys.normal]
+quit = ["q"]
+up = ["up", "k"]
+down = ["down", "j"]
+parent = ["left", "h"]
+open = ["right", "l", "enter"]
+search = ["/"]
+add = ["a"]
+rename = ["r"]
+delete = ["d"]
+marker_set = ["m"]
+marker_list = ["M"]
+marker_jump = ["g"]
+settings = ["s"]
+view = ["v"]
+copy = ["c"]
+cut = ["x"]
+paste = ["p"]
+open_shell = ["t"]
+open_with_picker = ["ctrl+o", "O"]
+open_with_quick = ["o"]
+
+[keys.add]
+dir = ["d"]
+
+[keys.settings]
+toggle_permissions = ["r"]
+toggle_dates = ["d"]
+toggle_owner = ["o"]
+toggle_metadata = ["m"]
+toggle_hidden = ["h", "H"]
+
+[keys.view]
+toggle_list_permissions = ["p"]
+toggle_list_owner = ["o"]
+
+[keys.copy]
+copy_path = ["p"]
+
+[keys.delete]
+confirm = ["d"]
+
+[keys.marker_list]
+close = ["esc"]
+up = ["up", "k"]
+down = ["down", "j"]
+open = ["enter"]
+rename = ["r"]
+edit_path = ["e"]
+delete = ["d"]
+add = ["a"]
+search = ["/"]
+
+[keys.open_with]
+close = ["esc"]
+up = ["up"]
+down = ["down"]
+open = ["enter"]
+backspace = ["backspace"]
