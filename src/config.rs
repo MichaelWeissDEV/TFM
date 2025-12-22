@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,6 +11,7 @@ pub struct Config {
     pub theme: Theme,
     pub icons: Icons,
     pub metadata_bar: MetadataBar,
+    pub open_with: OpenWithConfig,
 }
 
 impl Default for Config {
@@ -19,6 +21,7 @@ impl Default for Config {
             theme: Theme::default(),
             icons: Icons::default(),
             metadata_bar: MetadataBar::default(),
+            open_with: OpenWithConfig::default(),
         }
     }
 }
@@ -141,6 +144,20 @@ impl Default for MetadataIcons {
             created: "󰃰".to_string(),
             modified: "󰃯".to_string(),
             accessed: "󰃱".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OpenWithConfig {
+    pub quick: HashMap<u8, String>,
+}
+
+impl Default for OpenWithConfig {
+    fn default() -> Self {
+        Self {
+            quick: HashMap::new(),
         }
     }
 }

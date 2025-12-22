@@ -10,23 +10,28 @@ use crate::core::FileEntry;
 use crate::markers::MarkerStore;
 use crate::preview::Preview;
 use arboard::Clipboard;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, event, execute};
+use regex::RegexBuilder;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::Resize;
+use std::collections::HashSet;
 use std::env;
 use std::error::Error;
 use std::future::Future;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio_stream::StreamExt;
 
@@ -67,8 +72,8 @@ impl InputState {
 
     fn title(&self) -> &'static str {
         match self.action.clone() {
-            InputAction::Search => "Search",
-            InputAction::MarkerSearch => "Search Markers",
+            InputAction::Search => "Search (regex)",
+            InputAction::MarkerSearch => "Search Markers (n:/p:)",
             InputAction::AddFile => "Add File",
             InputAction::AddDir => "Add Dir",
             InputAction::Rename => "Rename",
@@ -88,6 +93,7 @@ enum Mode {
     Normal,
     Input(InputState),
     MarkerList,
+    ProgramList,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +103,7 @@ enum PendingPrefix {
     Copy,
     View,
     Delete,
+    OpenWith,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,12 +124,61 @@ struct MarkerListEntry {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct ProgramEntry {
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Clone, Copy)]
+enum MarkerFilterMode {
+    Any,
+    Name,
+    Path,
+}
+
 #[derive(Debug)]
 struct MarkerListState {
     entries: Vec<MarkerListEntry>,
     filtered_indices: Vec<usize>,
     selected: usize,
     filter: String,
+}
+
+#[derive(Debug)]
+struct ProgramListState {
+    entries: Vec<ProgramEntry>,
+    filtered_indices: Vec<usize>,
+    selected: usize,
+    filter: String,
+}
+
+fn parse_marker_filter(query: &str) -> (MarkerFilterMode, String) {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return (MarkerFilterMode::Any, String::new());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let (mode, rest) = if let Some(rest) = lower.strip_prefix("n:") {
+        (MarkerFilterMode::Name, rest)
+    } else if let Some(rest) = lower.strip_prefix("n/") {
+        (MarkerFilterMode::Name, rest)
+    } else if let Some(rest) = lower.strip_prefix("name:") {
+        (MarkerFilterMode::Name, rest)
+    } else if let Some(rest) = lower.strip_prefix("name/") {
+        (MarkerFilterMode::Name, rest)
+    } else if let Some(rest) = lower.strip_prefix("p:") {
+        (MarkerFilterMode::Path, rest)
+    } else if let Some(rest) = lower.strip_prefix("p/") {
+        (MarkerFilterMode::Path, rest)
+    } else if let Some(rest) = lower.strip_prefix("path:") {
+        (MarkerFilterMode::Path, rest)
+    } else if let Some(rest) = lower.strip_prefix("path/") {
+        (MarkerFilterMode::Path, rest)
+    } else {
+        (MarkerFilterMode::Any, lower.as_str())
+    };
+    (mode, rest.trim().to_string())
 }
 
 impl MarkerListState {
@@ -179,7 +235,69 @@ impl MarkerListState {
     }
 
     fn apply_filter(&mut self, preferred: Option<&str>) {
-        let query = self.filter.to_ascii_lowercase();
+        let (mode, query) = parse_marker_filter(&self.filter);
+        self.filtered_indices = if query.is_empty() {
+            (0..self.entries.len()).collect()
+        } else {
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    let name = entry.name.to_ascii_lowercase();
+                    let path = entry.path.to_string_lossy().to_ascii_lowercase();
+                    match mode {
+                        MarkerFilterMode::Any => name.contains(&query) || path.contains(&query),
+                        MarkerFilterMode::Name => name.contains(&query),
+                        MarkerFilterMode::Path => path.contains(&query),
+                    }
+                })
+                .map(|(index, _)| index)
+                .collect()
+        };
+        let mut selected = 0usize;
+        if let Some(name) = preferred {
+            if let Some(pos) = self
+                .filtered_indices
+                .iter()
+                .position(|&index| self.entries[index].name == name)
+            {
+                selected = pos;
+            }
+        }
+        if !self.filtered_indices.is_empty() {
+            self.selected = selected.min(self.filtered_indices.len() - 1);
+        } else {
+            self.selected = 0;
+        }
+    }
+}
+
+impl ProgramListState {
+    fn new(programs: &[ProgramEntry]) -> Self {
+        let mut entries = programs.to_vec();
+        entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        let filtered_indices = (0..entries.len()).collect();
+        Self {
+            entries,
+            filtered_indices,
+            selected: 0,
+            filter: String::new(),
+        }
+    }
+
+    fn selected_entry(&self) -> Option<&ProgramEntry> {
+        let index = *self.filtered_indices.get(self.selected)?;
+        self.entries.get(index)
+    }
+
+    fn update_filter(&mut self, value: String) {
+        let preferred = self.selected_entry().map(|entry| entry.name.clone());
+        self.filter = value;
+        self.apply_filter(preferred.as_deref());
+    }
+
+    fn apply_filter(&mut self, preferred: Option<&str>) {
+        let query = self.filter.trim().to_ascii_lowercase();
         self.filtered_indices = if query.is_empty() {
             (0..self.entries.len()).collect()
         } else {
@@ -235,11 +353,22 @@ enum ActionResult {
     Refresh { select: Option<PathBuf> },
 }
 
+#[derive(Debug, Clone)]
+enum SuspendAction {
+    Shell(PathBuf),
+    OpenWith {
+        program: PathBuf,
+        path: PathBuf,
+        cwd: PathBuf,
+    },
+}
+
 #[derive(Default)]
 struct InputEffect {
     exit: bool,
     redraw: bool,
     request_preview: bool,
+    suspend: Option<SuspendAction>,
 }
 
 struct App {
@@ -255,6 +384,8 @@ struct App {
     mode: Mode,
     pending_prefix: Option<PendingPrefix>,
     marker_list: Option<MarkerListState>,
+    program_list: Option<ProgramListState>,
+    programs: Vec<ProgramEntry>,
     preview: Option<Preview>,
     highlighted_preview: Option<ui::HighlightedText>,
     show_metadata: bool,
@@ -272,7 +403,6 @@ struct App {
     image_worker_tx: Sender<(u64, Box<dyn StatefulProtocol>, Resize, Rect)>,
     clipboard: Option<ClipboardEntry>,
     markers: MarkerStore,
-    exit_to_shell: Option<PathBuf>,
 }
 
 impl App {
@@ -284,6 +414,10 @@ impl App {
     ) -> Result<Self, core::CoreError> {
         let current_dir = env::current_dir()?;
         let markers = MarkerStore::load().await;
+        let programs = match tokio::task::spawn_blocking(scan_programs).await {
+            Ok(programs) => programs,
+            Err(_) => Vec::new(),
+        };
         let mut app = Self {
             show_metadata: config.metadata_bar.enabled,
             show_permissions: config.metadata_bar.show_permissions,
@@ -303,6 +437,8 @@ impl App {
             mode: Mode::Normal,
             pending_prefix: None,
             marker_list: None,
+            program_list: None,
+            programs,
             preview: None,
             highlighted_preview: None,
             preview_request_id: 0,
@@ -314,7 +450,6 @@ impl App {
             image_worker_tx,
             clipboard: None,
             markers,
-            exit_to_shell: None,
         };
         app.refresh_dirs(tx);
         Ok(app)
@@ -335,6 +470,19 @@ impl App {
                 .collect(),
             selected: list.selected,
         });
+        let program_popup = self.program_list.as_ref().map(|list| ui::ProgramPopup {
+            items: list
+                .filtered_indices
+                .iter()
+                .filter_map(|&index| list.entries.get(index))
+                .map(|entry| ui::ProgramListItem {
+                    name: entry.name.clone(),
+                    path: entry.path.to_string_lossy().to_string(),
+                })
+                .collect(),
+            selected: list.selected,
+            filter: list.filter.clone(),
+        });
         ui::UiState {
             config: &self.config,
             parent: &self.parent_entries,
@@ -353,6 +501,7 @@ impl App {
             image_state,
             input,
             marker_popup,
+            program_popup,
         }
     }
 
@@ -370,6 +519,7 @@ impl App {
                 })
             }
             Mode::MarkerList => None,
+            Mode::ProgramList => None,
             Mode::Normal => None,
         }
     }
@@ -500,18 +650,28 @@ impl App {
     fn apply_filter(&mut self, preferred: Option<PathBuf>) -> bool {
         let had_entries = !self.filtered_indices.is_empty();
         let previous_selected = self.selected;
-        let query = self.filter.to_ascii_lowercase();
-        self.filtered_indices = if query.is_empty() {
+        let raw_query = self.filter.trim();
+        let query_lower = raw_query.to_ascii_lowercase();
+        let regex = if raw_query.is_empty() {
+            None
+        } else {
+            RegexBuilder::new(raw_query)
+                .case_insensitive(true)
+                .build()
+                .ok()
+        };
+        self.filtered_indices = if raw_query.is_empty() {
             (0..self.current_entries.len()).collect()
         } else {
             self.current_entries
                 .iter()
                 .enumerate()
                 .filter(|(_, entry)| {
-                    entry
-                        .name
-                        .to_ascii_lowercase()
-                        .contains(query.as_str())
+                    if let Some(regex) = regex.as_ref() {
+                        regex.is_match(entry.name.as_str())
+                    } else {
+                        entry.name.to_ascii_lowercase().contains(query_lower.as_str())
+                    }
                 })
                 .map(|(index, _)| index)
                 .collect()
@@ -572,10 +732,87 @@ impl App {
             list.sync(&self.markers, preferred);
         }
     }
+
+    fn open_program_list(&mut self) {
+        self.pending_prefix = None;
+        self.program_list = Some(ProgramListState::new(&self.programs));
+        self.mode = Mode::ProgramList;
+    }
+
+    fn resolve_program_path(&self, name: &str) -> PathBuf {
+        self.programs
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(name))
+            .map(|entry| entry.path.clone())
+            .unwrap_or_else(|| PathBuf::from(name))
+    }
+
+    fn open_with_quick(&self, key: char) -> Option<SuspendAction> {
+        let digit = key.to_digit(10)? as u8;
+        let program = self.config.open_with.quick.get(&digit)?;
+        let target = self.selected_entry()?;
+        Some(SuspendAction::OpenWith {
+            program: self.resolve_program_path(program),
+            path: target.path.clone(),
+            cwd: self.current_dir.clone(),
+        })
+    }
 }
 
 fn is_hidden_name(name: &str) -> bool {
     name.starts_with('.')
+}
+
+fn scan_programs() -> Vec<ProgramEntry> {
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    let Some(path_var) = env::var_os("PATH") else {
+        return entries;
+    };
+    for dir in env::split_paths(&path_var) {
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if !is_executable(&path) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if seen.insert(name.clone()) {
+                entries.push(ProgramEntry { name, path });
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+    entries
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return metadata.permissions().mode() & 0o111 != 0;
+    }
+    #[cfg(windows)]
+    {
+        let ext = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        return matches!(ext.as_str(), "exe" | "cmd" | "bat" | "com");
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true
+    }
 }
 
 struct InputHandler;
@@ -589,6 +826,7 @@ impl InputHandler {
         match &mut app.mode {
             Mode::Input(_) => Self::handle_input(app, key, tx),
             Mode::MarkerList => Self::handle_marker_list(app, key, tx),
+            Mode::ProgramList => Self::handle_program_list(app, key, tx),
             Mode::Normal => Self::handle_normal(app, key, tx),
         }
     }
@@ -628,6 +866,7 @@ impl InputHandler {
                     exit: input_effect.exit,
                     redraw: effect.redraw || input_effect.redraw,
                     request_preview: input_effect.request_preview,
+                    suspend: input_effect.suspend,
                 };
             }
             PendingPrefix::Settings => match key.code {
@@ -696,6 +935,15 @@ impl InputHandler {
                 }
                 return Self::handle_normal_key(app, key, tx);
             }
+            PendingPrefix::OpenWith => {
+                if let KeyCode::Char(ch) = key.code {
+                    if ch.is_ascii_digit() {
+                        effect.suspend = app.open_with_quick(ch);
+                        return effect;
+                    }
+                }
+                return Self::handle_normal_key(app, key, tx);
+            }
         }
     }
 
@@ -705,6 +953,16 @@ impl InputHandler {
         tx: &tokio_mpsc::UnboundedSender<AppEvent>,
     ) -> InputEffect {
         let mut effect = InputEffect::default();
+        if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.open_program_list();
+            effect.redraw = true;
+            return effect;
+        }
+        if key.code == KeyCode::Char('O') {
+            app.open_program_list();
+            effect.redraw = true;
+            return effect;
+        }
         match key.code {
             KeyCode::Char('q') => effect.exit = true,
             KeyCode::Up | KeyCode::Char('k') => {
@@ -773,9 +1031,11 @@ impl InputHandler {
             KeyCode::Char('p') => {
                 Self::paste_selection(app, tx);
             }
+            KeyCode::Char('o') => {
+                app.pending_prefix = Some(PendingPrefix::OpenWith);
+            }
             KeyCode::Char('t') => {
-                app.exit_to_shell = Some(app.current_dir.clone());
-                effect.exit = true;
+                effect.suspend = Some(SuspendAction::Shell(app.current_dir.clone()));
             }
             _ => {}
         }
@@ -1105,6 +1365,8 @@ impl InputHandler {
             app.mode = Mode::Input(input);
         } else if app.marker_list.is_some() {
             app.mode = Mode::MarkerList;
+        } else if app.program_list.is_some() {
+            app.mode = Mode::ProgramList;
         } else {
             app.mode = Mode::Normal;
         }
@@ -1135,13 +1397,13 @@ impl InputHandler {
                     close = true;
                     effect.redraw = true;
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Up => {
                     if list.selected > 0 {
                         list.selected -= 1;
                         effect.redraw = true;
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Down => {
                     if list.selected + 1 < list.filtered_indices.len() {
                         list.selected += 1;
                         effect.redraw = true;
@@ -1213,6 +1475,76 @@ impl InputHandler {
             app.marker_list = None;
             app.mode = Mode::Normal;
         }
+        effect
+    }
+
+    fn handle_program_list(
+        app: &mut App,
+        key: KeyEvent,
+        _tx: &tokio_mpsc::UnboundedSender<AppEvent>,
+    ) -> InputEffect {
+        let mut effect = InputEffect::default();
+        let target_path = app.selected_entry().map(|entry| entry.path.clone());
+        let cwd = app.current_dir.clone();
+        let mut action: Option<SuspendAction> = None;
+        let mut close = false;
+        {
+            let Some(list) = app.program_list.as_mut() else {
+                app.mode = Mode::Normal;
+                return effect;
+            };
+            match key.code {
+                KeyCode::Esc => {
+                    close = true;
+                    effect.redraw = true;
+                }
+                KeyCode::Up => {
+                    if list.selected > 0 {
+                        list.selected -= 1;
+                        effect.redraw = true;
+                    }
+                }
+                KeyCode::Down => {
+                    if list.selected + 1 < list.filtered_indices.len() {
+                        list.selected += 1;
+                        effect.redraw = true;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let (Some(program), Some(target)) =
+                        (list.selected_entry(), target_path.as_ref())
+                    {
+                        action = Some(SuspendAction::OpenWith {
+                            program: program.path.clone(),
+                            path: target.clone(),
+                            cwd: cwd.clone(),
+                        });
+                        close = true;
+                        effect.redraw = true;
+                    }
+                }
+                KeyCode::Backspace => {
+                    let mut next = list.filter.clone();
+                    next.pop();
+                    list.update_filter(next);
+                    effect.redraw = true;
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    let mut next = list.filter.clone();
+                    next.push(ch);
+                    list.update_filter(next);
+                    effect.redraw = true;
+                }
+                _ => {}
+            }
+        }
+
+        if close {
+            app.program_list = None;
+            app.mode = Mode::Normal;
+        }
+
+        effect.suspend = action;
         effect
     }
 
@@ -1292,14 +1624,25 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn spawn_input(tx: tokio_mpsc::UnboundedSender<AppEvent>) -> thread::JoinHandle<()> {
+fn spawn_input(
+    tx: tokio_mpsc::UnboundedSender<AppEvent>,
+    paused: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
     thread::spawn(move || loop {
-        match event::read() {
-            Ok(event) => {
-                if tx.send(AppEvent::Input(event)).is_err() {
-                    break;
+        if paused.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        match event::poll(Duration::from_millis(100)) {
+            Ok(true) => match event::read() {
+                Ok(event) => {
+                    if tx.send(AppEvent::Input(event)).is_err() {
+                        break;
+                    }
                 }
-            }
+                Err(_) => break,
+            },
+            Ok(false) => continue,
             Err(_) => break,
         }
     })
@@ -1402,18 +1745,52 @@ fn spawn_copy_path(path: PathBuf) {
     });
 }
 
-fn launch_shell(path: &Path) -> io::Result<()> {
+fn suspend_terminal() -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen, cursor::Show)?;
+    Ok(())
+}
+
+fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?;
+    Ok(())
+}
+
+fn run_shell(path: &Path) -> io::Result<()> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let err = Command::new(shell).current_dir(path).exec();
-        Err(err)
+    Command::new(shell).current_dir(path).status().map(|_| ())
+}
+
+fn run_program(program: &Path, path: &Path, cwd: &Path) -> io::Result<()> {
+    Command::new(program).current_dir(cwd).arg(path).status().map(|_| ())
+}
+
+fn run_suspend_action(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    paused: &Arc<AtomicBool>,
+    action: SuspendAction,
+) -> io::Result<()> {
+    paused.store(true, Ordering::SeqCst);
+    let suspend_result = suspend_terminal();
+    if let Err(err) = suspend_result {
+        paused.store(false, Ordering::SeqCst);
+        return Err(err);
     }
-    #[cfg(not(unix))]
-    {
-        Command::new(shell).current_dir(path).status().map(|_| ())
+
+    let action_result = match action {
+        SuspendAction::Shell(path) => run_shell(&path),
+        SuspendAction::OpenWith { program, path, cwd } => run_program(&program, &path, &cwd),
+    };
+
+    let resume_result = resume_terminal(terminal);
+    paused.store(false, Ordering::SeqCst);
+    if let Err(err) = resume_result {
+        return Err(err);
     }
+
+    action_result
 }
 
 #[tokio::main]
@@ -1435,7 +1812,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let (tx, mut rx) = tokio_mpsc::unbounded_channel();
-    let _input_handle = spawn_input(tx.clone());
+    let input_paused = Arc::new(AtomicBool::new(false));
+    let _input_handle = spawn_input(tx.clone(), input_paused.clone());
     let image_worker_tx = spawn_image_worker(tx.clone());
 
     let mut app = App::new(config, picker, image_worker_tx, &tx).await?;
@@ -1450,6 +1828,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
                 let effect = InputHandler::handle_key(&mut app, key, &tx);
+                if let Some(action) = effect.suspend {
+                    if let Err(err) = run_suspend_action(&mut terminal, &input_paused, action) {
+                        eprintln!("Failed to run command: {err}");
+                    }
+                    redraw = true;
+                }
                 if effect.exit {
                     break;
                 }
@@ -1535,14 +1919,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let exit_to_shell = app.exit_to_shell.take();
     drop(terminal);
     drop(guard);
-    if let Some(path) = exit_to_shell {
-        if let Err(err) = launch_shell(&path) {
-            eprintln!("Failed to open shell: {err}");
-        }
-    }
 
     Ok(())
 }

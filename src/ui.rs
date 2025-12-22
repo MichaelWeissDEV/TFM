@@ -94,6 +94,17 @@ pub struct MarkerPopup {
     pub selected: usize,
 }
 
+pub struct ProgramListItem {
+    pub name: String,
+    pub path: String,
+}
+
+pub struct ProgramPopup {
+    pub items: Vec<ProgramListItem>,
+    pub selected: usize,
+    pub filter: String,
+}
+
 pub type HighlightedText = Text<'static>;
 
 pub struct UiState<'a> {
@@ -114,6 +125,7 @@ pub struct UiState<'a> {
     pub image_state: Option<&'a mut ThreadProtocol>,
     pub input: Option<InputPrompt>,
     pub marker_popup: Option<MarkerPopup>,
+    pub program_popup: Option<ProgramPopup>,
 }
 
 pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
@@ -288,6 +300,42 @@ pub fn render(frame: &mut Frame, mut state: UiState<'_>) {
             list_state.select(Some(selected));
         }
         frame.render_stateful_widget(list, overlay_area, &mut list_state);
+    }
+
+    if let Some(program_popup) = state.program_popup {
+        let overlay_area = program_rect(frame.area());
+        frame.render_widget(Clear, overlay_area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Open With")
+            .style(base_style)
+            .border_style(accent_style)
+            .title_style(accent_style);
+        let inner = block.inner(overlay_area);
+        frame.render_widget(block, overlay_area);
+
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner);
+        let search = Paragraph::new(format!("Search: {}|", program_popup.filter))
+            .style(base_style);
+        frame.render_widget(search, sections[0]);
+
+        let items: Vec<ListItem<'static>> = program_popup
+            .items
+            .iter()
+            .map(|item| ListItem::new(format!("{}  {}", item.name, item.path)))
+            .collect();
+        let list = List::new(items)
+            .highlight_style(selection_style)
+            .highlight_symbol("> ");
+        let mut list_state = ListState::default();
+        if !program_popup.items.is_empty() {
+            let selected = program_popup.selected.min(program_popup.items.len() - 1);
+            list_state.select(Some(selected));
+        }
+        frame.render_stateful_widget(list, sections[1], &mut list_state);
     }
 
     if let Some(input) = state.input {
@@ -499,6 +547,19 @@ fn input_rect(area: Rect) -> Rect {
 fn marker_rect(area: Rect) -> Rect {
     let width = (area.width * 3 / 4).max(20u16).min(area.width);
     let height = (area.height * 3 / 5).max(6u16).min(area.height);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn program_rect(area: Rect) -> Rect {
+    let width = (area.width * 4 / 5).max(30u16).min(area.width);
+    let height = (area.height * 3 / 5).max(8u16).min(area.height);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect {
