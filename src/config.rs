@@ -28,7 +28,7 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Result<Self, ConfigError> {
-        if let Ok(path) = env::var("VFM_CONFIG") {
+        if let Ok(path) = env::var("TFM_CONFIG") {
             let path = PathBuf::from(path);
             if path.exists() {
                 return load_from_path(&path);
@@ -151,7 +151,7 @@ impl Default for MetadataIcons {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct OpenWithConfig {
-    pub quick: HashMap<u8, String>,
+    pub quick: HashMap<String, String>,
 }
 
 impl Default for OpenWithConfig {
@@ -189,16 +189,16 @@ fn default_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     if let Some(dir) = dirs::config_dir() {
-        let base = dir.join("vfm");
+        let base = dir.join("tfm");
         paths.push(base.join("config.toml"));
         paths.push(base.join("config.yaml"));
         paths.push(base.join("config.yml"));
     }
 
     if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".vfm.toml"));
-        paths.push(home.join(".vfm.yaml"));
-        paths.push(home.join(".vfm.yml"));
+        paths.push(home.join(".tfm.toml"));
+        paths.push(home.join(".tfm.yaml"));
+        paths.push(home.join(".tfm.yml"));
     }
 
     paths

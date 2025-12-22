@@ -748,8 +748,12 @@ impl App {
     }
 
     fn open_with_quick(&self, key: char) -> Option<SuspendAction> {
-        let digit = key.to_digit(10)? as u8;
-        let program = self.config.open_with.quick.get(&digit)?;
+        let digit = key.to_digit(10)?;
+        let program = self
+            .config
+            .open_with
+            .quick
+            .get(&digit.to_string())?;
         let target = self.selected_entry()?;
         Some(SuspendAction::OpenWith {
             program: self.resolve_program_path(program),

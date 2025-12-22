@@ -75,10 +75,10 @@ fn parse_markers(content: &str) -> HashMap<String, PathBuf> {
 
 fn default_marker_path() -> PathBuf {
     if let Some(dir) = dirs::config_dir() {
-        return dir.join("vfm").join("markers.toml");
+        return dir.join("tfm").join("markers.toml");
     }
     if let Some(home) = dirs::home_dir() {
-        return home.join(".vfm.markers.toml");
+        return home.join(".tfm.markers.toml");
     }
     PathBuf::from("markers.toml")
 }

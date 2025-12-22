@@ -1485,6 +1485,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tfm"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "crossterm 0.28.1",
+ "dirs",
+ "image 0.24.9",
+ "infer",
+ "open",
+ "ratatui",
+ "ratatui-image",
+ "regex",
+ "serde",
+ "serde_yaml",
+ "syntect",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1703,30 +1727,6 @@ checksum = "e2e054861b4bd027cd373e18e8d8d8e6548085000e41290d95ce0c373a654b4a"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "vfm"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "crossterm 0.28.1",
- "dirs",
- "image 0.24.9",
- "infer",
- "open",
- "ratatui",
- "ratatui-image",
- "regex",
- "serde",
- "serde_yaml",
- "syntect",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tokio-stream",
- "toml",
- "unicode-width 0.2.0",
 ]
 
 [[package]]
