@@ -1,6 +1,6 @@
 [package]
 name = "tfm"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 description = "Terminal file manager (TUI)"
 authors = ["Michael Weiss"]

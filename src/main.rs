@@ -11,15 +11,17 @@ use crate::markers::MarkerStore;
 use crate::preview::Preview;
 use arboard::Clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::{cursor, event, execute};
-use regex::RegexBuilder;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::Resize;
+use regex::RegexBuilder;
 use std::collections::HashSet;
 use std::env;
 use std::error::Error;
@@ -333,7 +335,9 @@ impl KeyMap {
 }
 
 fn parse_key_list(list: &[String]) -> Vec<KeyBinding> {
-    list.iter().filter_map(|item| parse_key_binding(item)).collect()
+    list.iter()
+        .filter_map(|item| parse_key_binding(item))
+        .collect()
 }
 
 fn parse_key_binding(value: &str) -> Option<KeyBinding> {
@@ -426,7 +430,11 @@ impl MarkerListState {
                 path: path.clone(),
             })
             .collect();
-        entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        entries.sort_by(|a, b| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        });
         let filtered_indices = (0..entries.len()).collect();
         Self {
             entries,
@@ -442,10 +450,9 @@ impl MarkerListState {
     }
 
     fn sync(&mut self, markers: &MarkerStore, preferred: Option<&str>) {
-        let current = preferred.map(|name| name.to_string()).or_else(|| {
-            self.selected_entry()
-                .map(|entry| entry.name.clone())
-        });
+        let current = preferred
+            .map(|name| name.to_string())
+            .or_else(|| self.selected_entry().map(|entry| entry.name.clone()));
         let mut entries: Vec<MarkerListEntry> = markers
             .entries()
             .map(|(name, path)| MarkerListEntry {
@@ -453,7 +460,11 @@ impl MarkerListState {
                 path: path.clone(),
             })
             .collect();
-        entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        entries.sort_by(|a, b| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        });
         self.entries = entries;
         self.apply_filter(current.as_deref());
     }
@@ -511,7 +522,11 @@ impl MarkerListState {
 impl ProgramListState {
     fn new(programs: &[ProgramEntry]) -> Self {
         let mut entries = programs.to_vec();
-        entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        entries.sort_by(|a, b| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        });
         let filtered_indices = (0..entries.len()).collect();
         Self {
             entries,
@@ -736,7 +751,10 @@ impl App {
             show_owner: self.show_owner,
             show_list_permissions: self.show_list_permissions,
             show_list_owner: self.show_list_owner,
-            metadata: self.preview.as_ref().and_then(|preview| preview.metadata.as_ref()),
+            metadata: self
+                .preview
+                .as_ref()
+                .and_then(|preview| preview.metadata.as_ref()),
             image_state,
             input,
             marker_popup,
@@ -880,9 +898,19 @@ impl App {
         self.parent_entries.clear();
         self.filtered_indices.clear();
         self.clear_preview();
-        spawn_dir_listing(tx.clone(), DirTarget::Current, listing_id, self.current_dir.clone());
+        spawn_dir_listing(
+            tx.clone(),
+            DirTarget::Current,
+            listing_id,
+            self.current_dir.clone(),
+        );
         if let Some(parent) = self.current_dir.parent() {
-            spawn_dir_listing(tx.clone(), DirTarget::Parent, listing_id, parent.to_path_buf());
+            spawn_dir_listing(
+                tx.clone(),
+                DirTarget::Parent,
+                listing_id,
+                parent.to_path_buf(),
+            );
         }
     }
 
@@ -909,7 +937,10 @@ impl App {
                     if let Some(regex) = regex.as_ref() {
                         regex.is_match(entry.name.as_str())
                     } else {
-                        entry.name.to_ascii_lowercase().contains(query_lower.as_str())
+                        entry
+                            .name
+                            .to_ascii_lowercase()
+                            .contains(query_lower.as_str())
                     }
                 })
                 .map(|(index, _)| index)
@@ -988,11 +1019,7 @@ impl App {
 
     fn open_with_quick(&self, key: char) -> Option<SuspendAction> {
         let digit = key.to_digit(10)?;
-        let program = self
-            .config
-            .open_with
-            .quick
-            .get(&digit.to_string())?;
+        let program = self.config.open_with.quick.get(&digit.to_string())?;
         let target = self.selected_entry()?;
         Some(SuspendAction::OpenWith {
             program: self.resolve_program_path(program),
@@ -1027,7 +1054,11 @@ fn scan_programs() -> Vec<ProgramEntry> {
             }
         }
     }
-    entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+    entries.sort_by(|a, b| {
+        a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+    });
     entries
 }
 
@@ -1350,7 +1381,11 @@ impl InputHandler {
                             spawn_refresh(tx, select, async move { core::create_dir(&path).await });
                         } else {
                             let path = path.clone();
-                            spawn_refresh(tx, select, async move { core::create_file(&path).await });
+                            spawn_refresh(
+                                tx,
+                                select,
+                                async move { core::create_file(&path).await },
+                            );
                         }
                     }
                     keep_input = false;
@@ -1717,8 +1752,7 @@ impl InputHandler {
                     effect.redraw = true;
                 }
             } else if matches_any(key, &keys.open) {
-                if let (Some(program), Some(target)) =
-                    (list.selected_entry(), target_path.as_ref())
+                if let (Some(program), Some(target)) = (list.selected_entry(), target_path.as_ref())
                 {
                     action = Some(SuspendAction::OpenWith {
                         program: program.path.clone(),
@@ -1799,13 +1833,19 @@ impl InputHandler {
             ClipboardOp::Cut => {
                 let src = clipboard.path.clone();
                 let dest = dest.clone();
-                spawn_refresh(tx, select, async move { core::rename_path(&src, &dest).await });
+                spawn_refresh(
+                    tx,
+                    select,
+                    async move { core::rename_path(&src, &dest).await },
+                );
                 app.clipboard = None;
             }
             ClipboardOp::Copy => {
                 let src = clipboard.path.clone();
                 let dest = dest.clone();
-                spawn_refresh(tx, select, async move { core::copy_recursively(&src, &dest).await });
+                spawn_refresh(tx, select, async move {
+                    core::copy_recursively(&src, &dest).await
+                });
             }
         }
     }
@@ -1909,8 +1949,7 @@ fn spawn_dir_listing(
 fn spawn_image_worker(
     tx: tokio_mpsc::UnboundedSender<AppEvent>,
 ) -> Sender<(u64, Box<dyn StatefulProtocol>, Resize, Rect)> {
-    let (worker_tx, worker_rx) =
-        mpsc::channel::<(u64, Box<dyn StatefulProtocol>, Resize, Rect)>();
+    let (worker_tx, worker_rx) = mpsc::channel::<(u64, Box<dyn StatefulProtocol>, Resize, Rect)>();
     thread::spawn(move || {
         while let Ok((version, mut protocol, resize, rect)) = worker_rx.recv() {
             protocol.resize_encode(&resize, None, rect);
@@ -1920,11 +1959,8 @@ fn spawn_image_worker(
     worker_tx
 }
 
-fn spawn_refresh<F>(
-    tx: &tokio_mpsc::UnboundedSender<AppEvent>,
-    select: Option<PathBuf>,
-    action: F,
-) where
+fn spawn_refresh<F>(tx: &tokio_mpsc::UnboundedSender<AppEvent>, select: Option<PathBuf>, action: F)
+where
     F: Future<Output = std::io::Result<()>> + Send + 'static,
 {
     let tx = tx.clone();
@@ -1968,7 +2004,11 @@ fn run_shell(path: &Path) -> io::Result<()> {
 }
 
 fn run_program(program: &Path, path: &Path, cwd: &Path) -> io::Result<()> {
-    Command::new(program).current_dir(cwd).arg(path).status().map(|_| ())
+    Command::new(program)
+        .current_dir(cwd)
+        .arg(path)
+        .status()
+        .map(|_| ())
 }
 
 fn run_suspend_action(
@@ -2098,7 +2138,9 @@ Fix your config and restart, or set TFM_CONFIG to a valid config file."
                         app.clear_preview();
                         request_preview = true;
                     }
-                    if !app.preview_pending && app.preview.is_none() && !app.filtered_indices.is_empty()
+                    if !app.preview_pending
+                        && app.preview.is_none()
+                        && !app.filtered_indices.is_empty()
                     {
                         request_preview = true;
                     }

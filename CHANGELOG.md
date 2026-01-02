@@ -9,6 +9,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Startup now falls back to default config if the user config is invalid (instead of exiting).
 - Fixed `example_config.toml` (removed duplicate `[open_with]` table).
 
+## [1.0.4] - 2026-01-03
+### Fixed
+- Release/build: synchronize `Cargo.lock` with package version to keep `--locked` builds working.
+
 ## [1.0.2] - 2026-01-03
 ### Fixed
 - Arch package/release builds: avoid Oniguruma (`onig`) linker failures by using syntect's pure-Rust regex backend.
