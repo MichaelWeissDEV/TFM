@@ -1,6 +1,6 @@
 [package]
 name = "tfm"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "Terminal file manager (TUI)"
 authors = ["Michael Weiss"]
@@ -46,6 +46,6 @@ thiserror = "1.0"
 time = { version = "0.3", features = ["formatting"] }
 open = "5.3"
 arboard = "3.6"
-syntect = "5.3"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 unicode-width = "0.2"
 regex = "1.10"
