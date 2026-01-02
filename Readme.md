@@ -1,5 +1,13 @@
 # TFM (Terminal File Manager)
 
+Terminal file manager (TUI) with dual-pane navigation and preview.
+
+[![Release](https://img.shields.io/github/v/release/MichaelWeissDEV/TFM)](https://github.com/MichaelWeissDEV/TFM/releases)
+[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
+Downloads and installable packages are attached to each GitHub Release:
+https://github.com/MichaelWeissDEV/TFM/releases
+
 ## Features
 - Dual-pane navigation with preview.
 - Regex file search (case-insensitive).
