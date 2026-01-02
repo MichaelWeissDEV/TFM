@@ -80,13 +80,15 @@ jobs:
     container:
       image: archlinux:base-devel
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Install build deps
         run: |
           set -euo pipefail
-          pacman -Syu --noconfirm --needed rust cargo git
+          pacman -Syu --noconfirm --needed git rust cargo
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Prepare source tarball
         run: |
@@ -108,7 +110,7 @@ jobs:
           set -euo pipefail
           useradd -m builder
           chown -R builder:builder archpkg
-          sudo -u builder bash -lc 'cd archpkg && makepkg -s --noconfirm'
+          su - builder -c "cd \"$PWD/archpkg\" && makepkg -s --noconfirm"
           mkdir -p dist
           cp archpkg/*.pkg.tar.* dist/
 
