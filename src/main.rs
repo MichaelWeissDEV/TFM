@@ -1999,7 +1999,16 @@ fn run_suspend_action(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = Config::load()?;
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!(
+                "Warning: failed to load config ({err}). Starting with defaults.\n\
+Fix your config and restart, or set TFM_CONFIG to a valid config file."
+            );
+            Config::default()
+        }
+    };
     let guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
