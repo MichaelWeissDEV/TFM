@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  linux:
+  release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -69,53 +69,30 @@ jobs:
             cp target/appimage/*.AppImage "dist/tfm-${VERSION}.AppImage"
           fi
 
+      - name: Build Arch package (Docker)
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p archpkg dist
+          # Source tarball used by PKGBUILD (same name expected by packaging/arch/PKGBUILD.in)
+          git archive --format=tar.gz --prefix="tfm-${VERSION}/" -o "dist/tfm-${VERSION}.tar.gz" HEAD
+          sed "s/@PKGVER@/${VERSION}/g" packaging/arch/PKGBUILD.in > archpkg/PKGBUILD
+          cp "dist/tfm-${VERSION}.tar.gz" archpkg/
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            archlinux:base-devel \
+            bash -lc '
+              set -euo pipefail
+              pacman -Syu --noconfirm --needed git rust cargo
+              useradd -m builder
+              chown -R builder:builder /repo/archpkg
+              su - builder -c "cd /repo/archpkg && makepkg -s --noconfirm"
+              cp /repo/archpkg/*.pkg.tar.* /repo/dist/
+            '
+
       - name: Upload artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*
-
-  arch:
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
-    steps:
-      - name: Install build deps
-        run: |
-          set -euo pipefail
-          pacman -Syu --noconfirm --needed git rust cargo
-
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Prepare source tarball
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p dist
-          git archive --format=tar.gz --prefix="tfm-${VERSION}/" -o "dist/tfm-${VERSION}.tar.gz" HEAD
-
-      - name: Prepare PKGBUILD
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p archpkg
-          sed "s/@PKGVER@/${VERSION}/g" packaging/arch/PKGBUILD.in > archpkg/PKGBUILD
-          cp dist/tfm-${VERSION}.tar.gz archpkg/
-
-      - name: Build Arch package
-        run: |
-          set -euo pipefail
-          useradd -m builder
-          chown -R builder:builder archpkg
-          su - builder -c "cd \"$PWD/archpkg\" && makepkg -s --noconfirm"
-          mkdir -p dist
-          cp archpkg/*.pkg.tar.* dist/
-
-      - name: Upload Arch package to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.pkg.tar.*
