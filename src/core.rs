@@ -40,19 +40,6 @@ pub enum CoreError {
     Preview(#[from] preview::PreviewError),
 }
 
-pub async fn list_dir(path: &Path) -> Result<Vec<FileEntry>, CoreError> {
-    let mut read_dir = fs::read_dir(path).await?;
-    let mut entries = Vec::new();
-
-    while let Some(entry) = read_dir.next_entry().await? {
-        entries.push(FileEntry::from_dir_entry(entry).await?);
-    }
-
-    sort_entries(&mut entries);
-
-    Ok(entries)
-}
-
 pub async fn read_dir_stream(path: &Path) -> Result<ReadDirStream, CoreError> {
     Ok(ReadDirStream::new(fs::read_dir(path).await?))
 }
@@ -61,7 +48,10 @@ pub fn sort_entries(entries: &mut [FileEntry]) {
     entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
         (true, false) => Ordering::Less,
         (false, true) => Ordering::Greater,
-        _ => a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()),
+        _ => a
+            .name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase()),
     });
 }
 

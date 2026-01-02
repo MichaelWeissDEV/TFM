@@ -3,10 +3,10 @@ use crate::security::{self, MismatchStatus};
 use image::DynamicImage;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use tokio::fs::{self, File};
-use tokio::io::AsyncReadExt;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use tokio::fs::{self, File};
+use tokio::io::AsyncReadExt;
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -66,11 +66,7 @@ pub async fn load(path: &Path, config: &Config) -> Result<Preview, PreviewError>
     buf.truncate(read_len);
 
     let mismatch = if config.check_mismatch {
-        Some(
-            security::check_file_mismatch(path)
-                .await
-                .unwrap_or(MismatchStatus::Unknown),
-        )
+        Some(security::check_buffer_mismatch(path, &buf))
     } else {
         None
     };

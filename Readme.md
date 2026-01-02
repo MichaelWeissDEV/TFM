@@ -18,7 +18,33 @@
 - Default path: `~/.config/tfm/config.toml` (fallbacks: `~/.tfm.toml`, YAML variants).
 - Env override: `TFM_CONFIG=/path/to/config.toml`.
 - If no config exists, TFM writes a default one and uses built-in defaults.
-- Example config (all defaults): `src/example_config.toml`.
+- Example config (all defaults): `example_config.toml`.
+
+## Install
+### From GitHub Releases (binary)
+- Download the `tfm-<version>-x86_64-unknown-linux-gnu.tar.gz` asset.
+- Extract and install:
+	- `tar -xzf tfm-<version>-x86_64-unknown-linux-gnu.tar.gz`
+	- `sudo install -m755 tfm /usr/local/bin/tfm`
+
+### Debian / Ubuntu (.deb)
+- Download the `.deb` asset and install:
+	- `sudo apt install ./tfm_<version>_amd64.deb`
+
+### Arch Linux (.pkg.tar.zst)
+- Download the `.pkg.tar.zst` asset and install:
+	- `sudo pacman -U ./tfm-<version>-1-x86_64.pkg.tar.zst`
+
+### openSUSE / RPM (.rpm)
+- Download the `.rpm` asset and install:
+	- `sudo zypper install ./tfm-<version>-1.x86_64.rpm`
+
+### AppImage
+- Download the `.AppImage` asset and run:
+	- `chmod +x ./tfm-<version>.AppImage && ./tfm-<version>.AppImage`
+
+## License
+GPLv3 (GNU General Public License v3.0 only). See `LICENSE`.
 
 ## Theme Colors
 Theme colors are strings (named colors or `#RRGGBB`):

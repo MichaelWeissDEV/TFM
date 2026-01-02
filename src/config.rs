@@ -397,7 +397,13 @@ pub enum ConfigError {
 }
 
 fn load_from_path(path: &Path) -> Result<Config, ConfigError> {
-    let content = fs::read_to_string(path)?;
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ConfigError::Missing(path.to_path_buf()));
+        }
+        Err(err) => return Err(ConfigError::Io(err)),
+    };
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("toml") => Ok(toml::from_str(&content)?),
         Some("yaml") | Some("yml") => Ok(serde_yaml::from_str(&content)?),
@@ -410,14 +416,10 @@ fn write_default_config(path: &Path, config: &Config) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let content = match path.extension().and_then(|ext| ext.to_str()) {
-        Some("yaml") | Some("yml") => {
-            serde_yaml::to_string(config).map_err(|err| {
-                std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
-            })?
-        }
-        _ => toml::to_string_pretty(config).map_err(|err| {
-            std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
-        })?,
+        Some("yaml") | Some("yml") => serde_yaml::to_string(config)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?,
+        _ => toml::to_string_pretty(config)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?,
     };
     fs::write(path, content)
 }

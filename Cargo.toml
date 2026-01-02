@@ -1,7 +1,34 @@
 [package]
 name = "tfm"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+description = "Terminal file manager (TUI)"
+authors = ["Michael Weiss"]
+license = "GPL-3.0-only"
+
+[package.metadata.deb]
+maintainer = "Michael Weiss"
+section = "utils"
+priority = "optional"
+depends = "$auto"
+assets = [
+	["target/release/tfm", "usr/bin/", "755"],
+	["Readme.md", "usr/share/doc/tfm/Readme.md", "644"],
+	["LICENSE", "usr/share/doc/tfm/LICENSE", "644"],
+	["CHANGELOG.md", "usr/share/doc/tfm/CHANGELOG.md", "644"],
+	["example_config.toml", "usr/share/doc/tfm/example_config.toml", "644"],
+]
+
+[package.metadata.generate-rpm]
+release = "1"
+url = "https://github.com"
+assets = [
+  { source = "target/release/tfm", dest = "/usr/bin/tfm", mode = "755" },
+  { source = "Readme.md", dest = "/usr/share/doc/tfm/Readme.md", mode = "644", doc = true },
+  { source = "LICENSE", dest = "/usr/share/doc/tfm/LICENSE", mode = "644", doc = true },
+  { source = "CHANGELOG.md", dest = "/usr/share/doc/tfm/CHANGELOG.md", mode = "644", doc = true },
+  { source = "example_config.toml", dest = "/usr/share/doc/tfm/example_config.toml", mode = "644", doc = true },
+]
 
 [dependencies]
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }

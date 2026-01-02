@@ -1,0 +1,29 @@
+# Maintainer: Michael Weiss
+# Template PKGBUILD for GitHub Releases.
+# The release workflow replaces @PKGVER@ and provides the matching source tarball.
+
+pkgname=tfm
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc="Terminal file manager (TUI)"
+arch=('x86_64')
+url="https://github.com"
+license=('GPL3')
+depends=('glibc')
+makedepends=('rust' 'cargo')
+source=("${pkgname}-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  cargo build --release --locked
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 "target/release/tfm" "${pkgdir}/usr/bin/tfm"
+  install -Dm644 "Readme.md" "${pkgdir}/usr/share/doc/tfm/Readme.md"
+  install -Dm644 "LICENSE" "${pkgdir}/usr/share/doc/tfm/LICENSE"
+  install -Dm644 "CHANGELOG.md" "${pkgdir}/usr/share/doc/tfm/CHANGELOG.md"
+  install -Dm644 "example_config.toml" "${pkgdir}/usr/share/doc/tfm/example_config.toml"
+}

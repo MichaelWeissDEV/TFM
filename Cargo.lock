@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "tfm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "arboard",
  "crossterm 0.28.1",
